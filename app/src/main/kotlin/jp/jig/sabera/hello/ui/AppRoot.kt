@@ -78,8 +78,11 @@ private fun ConnectedScreen(
         topBar = { TopAppBar(title = { Text("接続中: ${session.deviceName}") }) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            // タブは4つ。固定幅の TabRow に収めるためラベルは短くしてある。
+            // ScrollableTabRow にすると初期表示で右端のタブが画面外に出て
+            // 存在に気づかれないので、増やすときもまずラベルを削ること
             TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello / World") })
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
                 Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("ナビ") })
