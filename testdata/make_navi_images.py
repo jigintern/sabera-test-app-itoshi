@@ -14,6 +14,11 @@
   転送時間の目安が分かる。アプリ側では ThreeBitRleCodec が公開されていないため
   表示できない値で、ここでしか出せない。
 
+  ⚠️ 画像はすべて黒背景で作る。SABERA は透過型の加算ディスプレイで白い側を
+  描画するので、白背景だと画面全面が光る逆の状態になる。黒地に白線が正しい。
+  例外は noise（一様乱数であること自体が RLE 最悪ケースの条件）と
+  steps8（8階調そのものを確認する画像）の2枚だけ。
+
 使い方:
   python3 testdata/make_navi_images.py            画像を生成して見積り表を出す
   python3 testdata/make_navi_images.py --push     生成して端末のギャラリーへ送る
@@ -65,7 +70,9 @@ def write_png(path, w, h, pixels):
 # ───────────────────────── 描画ヘルパ ─────────────────────────
 
 class Canvas:
-    def __init__(self, w, h, fill=255):
+    # 既定を黒にしてある。SABERA は透過型の加算ディスプレイで白い側を描画するので、
+    # 白背景で作ると画面全面が光る逆の状態になる。黒地に白い線が正しい。
+    def __init__(self, w, h, fill=0):
         self.w, self.h = w, h
         self.px = bytearray([fill]) * (w * h)
 
@@ -133,31 +140,37 @@ def img_frame(size=512):
     """基準画像。全体が届いたかを一目で判定する。
 
     外周の枠・四隅のL字・中央の十字・対角線。どれか欠けていれば切れている。
-    平坦な面積が広いので RLE はよく効く（= 上限が画素数側かを見るのに向く）。
+    黒地に白線。平坦（= 黒）な面積が広いので RLE はよく効き、
+    上限が画素数側かどうかを見るのに向く。
     """
-    c = Canvas(size, size, 255)
-    c.frame(max(2, size // 128), 0)
-    c.corner_marks(size // 5, max(4, size // 64), 0, inset=max(6, size // 40))
-    c.line(0, 0, size - 1, size - 1, 96, max(1, size // 256))
-    c.line(size - 1, 0, 0, size - 1, 96, max(1, size // 256))
-    c.line(size // 2, size // 8, size // 2, size * 7 // 8, 0, max(2, size // 170))
-    c.line(size // 8, size // 2, size * 7 // 8, size // 2, 0, max(2, size // 170))
-    c.disc(size // 2, size // 2, size // 12, 0)
-    c.disc(size // 2, size // 2, size // 20, 255)
+    c = Canvas(size, size, 0)
+    c.frame(max(2, size // 128), 255)
+    c.corner_marks(size // 5, max(4, size // 64), 255, inset=max(6, size // 40))
+    # 対角線は中間調。8階調のうち中ほどが出ているかも同時に見える
+    c.line(0, 0, size - 1, size - 1, 128, max(1, size // 256))
+    c.line(size - 1, 0, 0, size - 1, 128, max(1, size // 256))
+    c.line(size // 2, size // 8, size // 2, size * 7 // 8, 255, max(2, size // 170))
+    c.line(size // 8, size // 2, size * 7 // 8, size // 2, 255, max(2, size // 170))
+    c.disc(size // 2, size // 2, size // 12, 255)
+    c.disc(size // 2, size // 2, size // 20, 0)
     # 1/4 と 3/4 の位置に目盛り。どこで切れたかが分かる
     for f in (1, 3):
         p = size * f // 4
-        c.rect(p - 2, 0, p + 2, size // 16, 0)
-        c.rect(0, p - 2, size // 16, p + 2, 0)
+        c.rect(p - 2, 0, p + 2, size // 16, 255)
+        c.rect(0, p - 2, size // 16, p + 2, 255)
     return size, size, c.px
 
 
 def img_map_mock(size=512):
-    """実用に近い地図風。線画なので圧縮率は中間的で、本番の見え方に一番近い。"""
-    c = Canvas(size, size, 255)
+    """実用に近い地図風。線画なので圧縮率は中間的で、本番の見え方に一番近い。
+
+    黒地に白線。加算ディスプレイでは「描いた側が光る」ので、地図として読ませたい
+    街路と経路こそ明るくする。白背景にすると背景が光って線だけ抜けた反転像になる。
+    """
+    c = Canvas(size, size, 0)
     s = size / 512.0
-    road = 176           # 一般道はグレー
-    route = 0            # 経路は黒
+    road = 96            # 一般道は暗いグレー。経路より目立たせない
+    route = 255          # 経路は白。一番明るくする
     rw = max(3, int(14 * s))
     # 格子状の街路
     for i in range(1, 5):
@@ -166,17 +179,17 @@ def img_map_mock(size=512):
         c.line(p, 0, p, size - 1, road, rw)
     # 斜めの幹線
     c.line(0, size - 1, size - 1, 0, road, int(rw * 1.6))
-    # 経路（太い黒線）
+    # 経路（太い白線）
     pts = [(int(0.10 * size), int(0.85 * size)), (int(0.40 * size), int(0.85 * size)),
            (int(0.40 * size), int(0.40 * size)), (int(0.80 * size), int(0.40 * size)),
            (int(0.80 * size), int(0.15 * size))]
     for a, b in zip(pts, pts[1:]):
         c.line(a[0], a[1], b[0], b[1], route, int(rw * 1.4))
-    # 現在地マーカーと目的地
+    # 現在地マーカーと目的地。中を黒で抜いて経路の線と区別できるようにする
     c.disc(pts[0][0], pts[0][1], int(18 * s), route)
-    c.disc(pts[0][0], pts[0][1], int(9 * s), 255)
+    c.disc(pts[0][0], pts[0][1], int(9 * s), 0)
     c.disc(pts[-1][0], pts[-1][1], int(16 * s), route)
-    c.frame(max(2, int(3 * s)), 0)
+    c.frame(max(2, int(3 * s)), 255)
     return size, size, c.px
 
 
@@ -191,10 +204,15 @@ def img_flat(size=512):
     （when(index) が 0 に先にマッチする）、単一チャンクになるのは圧縮後 64 バイト
     以下＝約 45x45 以下のときだけ。アプリのスライダー下限は 64px（最小128バイト）
     なので、この経路からは踏めない。
+
+    背景は真っ黒ではなく暗い一様面にしてある。真っ黒だと加算ディスプレイでは
+    何も光らず、「届いたが真っ黒」と「届いていない」の区別がつかない。
+    中央の白い四角と四隅の印が、届いたことの証拠になる。
     """
-    c = Canvas(size, size, 128)
+    c = Canvas(size, size, 32)
     c.rect(size // 2 - size // 32, size // 2 - size // 32,
-           size // 2 + size // 32, size // 2 + size // 32, 0)
+           size // 2 + size // 32, size // 2 + size // 32, 255)
+    c.corner_marks(size // 8, max(3, size // 96), 255, inset=max(6, size // 40))
     return size, size, c.px
 
 
@@ -203,6 +221,10 @@ def img_noise(size=512):
 
     同じ画素数の frame/flat が通ってこれが通らなければ、
     効いている上限は画素数ではなく圧縮後のバイト数（かパケット数）。
+
+    これだけは黒背景にしない。全画素が独立に一様乱数であることが RLE 最悪ケースの
+    条件そのもので、暗くすると連長が伸びて最悪ケースでなくなる。加算ディスプレイでは
+    画面全面がざらついて光るが、見た目ではなく圧縮率を測るための画像なので意図どおり。
     """
     c = Canvas(size, size, 0)
     # 再現性のために線形合同法を自前で回す（seed 固定）
@@ -214,7 +236,12 @@ def img_noise(size=512):
 
 
 def img_steps8(size=512):
-    """量子化レベル 0〜7 ちょうどの8段。8階調すべて出るかを見る。"""
+    """量子化レベル 0〜7 ちょうどの8段。8階調すべて出るかを見る。
+
+    8段はそのまま残す。階調そのものを確認する画像なので、黒側に寄せると
+    上の段が潰れて何を測っているのか分からなくなる。左端の段（レベル0）が
+    黒背景の役目を果たしていて、そこが光っていなければ黒は黒である。
+    """
     c = Canvas(size, size, 0)
     band = size // LEVELS
     for i in range(LEVELS):
@@ -231,30 +258,33 @@ def img_steps8(size=512):
 
 
 def img_wide(w=768, h=384):
-    """横長。FILL（切り取り）と FIT（内接）の違い、非正方形が通るかの確認用。"""
-    c = Canvas(w, h, 255)
-    c.frame(3, 0)
-    c.corner_marks(min(w, h) // 4, max(4, h // 64), 0, inset=max(6, h // 40))
-    # 中央を跨ぐ帯。FILL で切り取られると両端の三角が消える
-    c.line(0, h // 2, w - 1, h // 2, 0, 10)
+    """横長。FILL（切り取り）と FIT（内接）の違い、非正方形が通るかの確認用。
+
+    黒地に白線。左右端の印が光っていれば FIT、消えていれば FILL。
+    """
+    c = Canvas(w, h, 0)
+    c.frame(3, 255)
+    c.corner_marks(min(w, h) // 4, max(4, h // 64), 255, inset=max(6, h // 40))
+    # 中央を跨ぐ帯。FILL で切り取られると両端の印が消える
+    c.line(0, h // 2, w - 1, h // 2, 255, 10)
     for i in range(1, 8):
         x = w * i // 8
-        c.line(x, h // 4, x, h * 3 // 4, 96, 6)
-    c.disc(w // 2, h // 2, h // 5, 0)
-    c.disc(w // 2, h // 2, h // 8, 255)
+        c.line(x, h // 4, x, h * 3 // 4, 128, 6)
+    c.disc(w // 2, h // 2, h // 5, 255)
+    c.disc(w // 2, h // 2, h // 8, 0)
     # 左右の端に印。FIT なら残り、FILL なら消える
-    c.rect(6, h // 2 - h // 8, 6 + h // 10, h // 2 + h // 8, 0)
-    c.rect(w - 6 - h // 10, h // 2 - h // 8, w - 6, h // 2 + h // 8, 0)
+    c.rect(6, h // 2 - h // 8, 6 + h // 10, h // 2 + h // 8, 255)
+    c.rect(w - 6 - h // 10, h // 2 - h // 8, w - 6, h // 2 + h // 8, 255)
     return w, h, c.px
 
 
 IMAGES = [
-    ("navi_frame.png", "枠と十字。全体が届いたかの基準", img_frame),
-    ("navi_map_mock.png", "地図風の線画。本番に一番近い", img_map_mock),
-    ("navi_flat.png", "ほぼ単色。RLE 最良ケース", img_flat),
-    ("navi_noise.png", "乱数。RLE 最悪ケース", img_noise),
+    ("navi_frame.png", "黒地に白の枠と十字。全体が届いたかの基準", img_frame),
+    ("navi_map_mock.png", "黒地の地図風線画。本番に一番近い", img_map_mock),
+    ("navi_flat.png", "暗い一様面＋白い印。RLE 最良ケース", img_flat),
+    ("navi_noise.png", "乱数。RLE 最悪ケース（全面が光る）", img_noise),
     ("navi_steps8.png", "8階調バー。量子化の確認", img_steps8),
-    ("navi_wide.png", "横長。FILL/FIT の差", img_wide),
+    ("navi_wide.png", "黒地の横長。FILL/FIT の差", img_wide),
 ]
 
 
