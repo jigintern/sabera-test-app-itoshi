@@ -23,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -42,7 +41,7 @@ fun HelloWorldScreen(
     var error by remember { mutableStateOf<String?>(null) }
 
     // グラスへの表示は「イベントハンドラから送る」のではなく「状態から駆動する」。
-    // displayText が変わるたびに前回の送信がキャンセルされ、新しい送信が走る
+    // displayText か surface が変わるたびに前回の送信がキャンセルされ、新しい送信が走る
     LaunchedEffect(session, displayText) {
         try {
             session.showText(displayText)
@@ -67,7 +66,7 @@ fun HelloWorldScreen(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "耳のつるをシングルタップすると World に変わります",
+            text = "耳のつるをシングルタップするたびに Hello ↔ World が入れ替わります",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -78,18 +77,18 @@ fun HelloWorldScreen(
         // タップが届かなくてもデモできるように、端末側のフォールバックを置いておく
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
-                onClick = { onDisplayTextChange("Hello") },
-                enabled = displayText != "Hello",
+                onClick = { onDisplayTextChange(TEXT_HELLO) },
+                enabled = displayText != TEXT_HELLO,
                 modifier = Modifier.weight(1f),
             ) { Text("Hello に戻す") }
             Button(
-                onClick = { onDisplayTextChange("World") },
-                enabled = displayText != "World",
+                onClick = { onDisplayTextChange(TEXT_WORLD) },
+                enabled = displayText != TEXT_WORLD,
                 modifier = Modifier.weight(1f),
             ) { Text("World にする") }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(24.dp))
         GestureLog(gestures)
 
         Spacer(Modifier.height(24.dp))

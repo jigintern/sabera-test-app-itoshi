@@ -23,6 +23,9 @@ private const val TAG = "SABERA"
  */
 private const val PAGE_SETTLE_MS = 250L
 
+/** 状態パケットが効いてから本文を送るまでの待ち */
+private const val STATUS_SETTLE_MS = 80L
+
 /**
  * 接続中の 1 台のグラスに対する操作をまとめたもの。
  * 接続が切れて繋ぎ直すと、UI 側で新しいインスタンスが作り直される。
@@ -65,6 +68,10 @@ class GlassSession(val client: GlassClient) {
             // ページを離れているとキャッシュが黙って腐る。毎回入り直す（パケット1個）
             TextSurface.enter(commands)
             delay(PAGE_SETTLE_MS)
+            // ページに入っただけでは本文は出ない。状態が READY のままだと
+            // firmware 側が「空画面。文章も表示されない」で描画しない
+            TextSurface.applyStatus(commands)
+            delay(STATUS_SETTLE_MS)
             TextSurface.send(commands, text)
         }
     }

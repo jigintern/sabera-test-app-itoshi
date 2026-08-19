@@ -10,18 +10,21 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.jigglass.glass.GestureType
 import app.jigglass.glass.GlassManager
 import jp.jig.sabera.hello.glass.GlassSession
+
+const val TEXT_HELLO = "Hello"
+const val TEXT_WORLD = "World"
 
 @Composable
 fun AppRoot(manager: GlassManager) {
@@ -36,7 +39,7 @@ fun AppRoot(manager: GlassManager) {
 
     val session = remember(currentClient) { GlassSession(currentClient) }
     val gestures = remember(session) { mutableStateListOf<String>() }
-    var displayText by rememberSaveable(session) { mutableStateOf("Hello") }
+    var displayText by rememberSaveable(session) { mutableStateOf(TEXT_HELLO) }
 
     // ジェスチャー購読はタブより1段上に置く。
     //  - タブを切り替えても購読が切れない（イベントを取りこぼさない）
@@ -44,7 +47,10 @@ fun AppRoot(manager: GlassManager) {
     LaunchedEffect(session) {
         session.collectGestures { gesture ->
             gestures.add(0, gesture.name)
-            if (gesture == GestureType.SINGLE_TAP) displayText = "World"
+            // タップのたびに往復させる。1回目以降も反応が見えるのでデモで分かりやすい
+            if (gesture == GestureType.SINGLE_TAP) {
+                displayText = if (displayText == TEXT_HELLO) TEXT_WORLD else TEXT_HELLO
+            }
         }
     }
 

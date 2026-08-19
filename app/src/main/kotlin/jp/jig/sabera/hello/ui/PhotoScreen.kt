@@ -39,6 +39,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import jp.jig.sabera.hello.glass.GlassSession
+import jp.jig.sabera.hello.image.FitMode
 import jp.jig.sabera.hello.image.GrayscaleConverter
 import jp.jig.sabera.hello.image.GrayscaleImage
 import jp.jig.sabera.hello.image.MAX_GLASS_DIM
@@ -55,6 +56,7 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
     var image by remember { mutableStateOf<GrayscaleImage?>(null) }
     var maxDim by remember { mutableStateOf(MAX_GLASS_DIM) }
     var dither by remember { mutableStateOf(false) }
+    var fit by remember { mutableStateOf(FitMode.FILL) }
     var converting by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -66,12 +68,12 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
     ) { uri -> if (uri != null) pickedUri = uri }
 
     // 選択画像・サイズ・ディザのどれかが変わったら変換し直す
-    LaunchedEffect(pickedUri, maxDim, dither) {
+    LaunchedEffect(pickedUri, maxDim, dither, fit) {
         val uri = pickedUri ?: return@LaunchedEffect
         converting = true
         error = null
         try {
-            image = GrayscaleConverter.fromUri(context, uri, maxDim, dither)
+            image = GrayscaleConverter.fromUri(context, uri, maxDim, dither, fit)
         } catch (e: Throwable) {
             error = "画像の変換に失敗しました: ${e.message}"
             image = null
@@ -109,6 +111,23 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
             }
         }
 
+        Spacer(Modifier.height(12.dp))
+        Text("収め方", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "グラス側は 196x196 が上限。切り取って正方形にすると一番大きく見える",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FitMode.entries.forEach { option ->
+                FilterChip(
+                    selected = fit == option,
+                    onClick = { fit = option },
+                    label = { Text(option.label) },
+                )
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = dither, onCheckedChange = { dither = it })
@@ -135,9 +154,14 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
 
             image != null -> {
                 val img = image!!
+                val usage = img.width * img.height * 100 / (MAX_GLASS_DIM * MAX_GLASS_DIM)
                 Text(
                     "プレビュー（グラスと同じ8階調）  ${img.width} x ${img.height}",
                     style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    "グラスの表示領域の $usage% を使用",
+                    style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))
                 Image(
@@ -158,11 +182,12 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
                         status = null
                         error = null
                         scope.launch {
-                            val startedAt = System.currentTimeMillis()
                             try {
+                                // SDK は内部でキューイングして即座に返るので、ここで
+                                // 計測できるのは「投入までの時間」であって転送完了ではない。
+                                // 完了を知る手段が SDK に無いため、時間は出さない
                                 session.showImage(img.width, img.height, img.pixels)
-                                val elapsed = (System.currentTimeMillis() - startedAt) / 1000.0
-                                status = "送信しました（${"%.1f".format(elapsed)} 秒）"
+                                status = "送信しました。グラスに出るまで数秒かかることがあります"
                             } catch (e: Throwable) {
                                 error = "送信エラー: ${e.message}"
                             } finally {
@@ -183,7 +208,7 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "サイズによっては数秒かかります",
+                    "写真は平坦な部分が少なく圧縮が効きにくいので、テスト画像より時間がかかります",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -203,7 +228,7 @@ fun PhotoScreen(session: GlassSession, gestures: List<String>) {
 
         Spacer(Modifier.height(16.dp))
         OutlinedButton(
-            onClick = { scope.launch { runCatching { session.showText("Hello") } } },
+            onClick = { scope.launch { runCatching { session.showText(TEXT_HELLO) } } },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("テキスト表示に戻す") }
 

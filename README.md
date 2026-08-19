@@ -2,7 +2,7 @@
 
 SABERA スマートグラスに文字と画像を表示する練習用 Android アプリ。
 
-- **Hello / World タブ** — グラスに `Hello` を表示し、耳のつるをシングルタップすると `World` に変わる
+- **Hello / World タブ** — グラスに `Hello` を表示し、耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる
 - **写真タブ** — 端末のギャラリーから写真を選び、グラスに表示する
 
 ## 必要なもの
@@ -46,8 +46,8 @@ adb logcat --pid=$(adb shell pidof -s jp.jig.sabera.hello)
 | `SaberaApp.kt` | SDK の SPI 差し込み。他のどの SDK API よりも先に実行する必要がある |
 | `MainActivity.kt` | CompanionDeviceManager まわりの必須配線。冗長に見えても整理しないこと |
 | `glass/GlassSession.kt` | 接続中の1台に対する操作。送信の直列化とジェスチャー購読 |
-| `glass/TextSurface.kt` | テキストをどのページに出すかの唯一の切り替え点 |
-| `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換 |
+| `glass/TextSurface.kt` | テキストをどのページに、どの状態で出すかの唯一の切り替え点 |
+| `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。`FitMode` で切り取りか内接かを選ぶ |
 | `image/GrayscaleImage.kt` | 変換結果と、実機と同じ8階調のプレビュー生成 |
 | `ui/AppRoot.kt` | 接続状態の監視とジェスチャー購読の置き場所 |
 
@@ -71,10 +71,43 @@ SDK 内部では `enterXPage()` と `sendXContent()` がそれぞれ独立した
 イベントは捨てられる。`AppRoot` で `session` をキーに購読することで、タブ切り替えでは
 切れず、切断時には自動でキャンセルされる。
 
-### 画像は 196x196 まで
+### ページに入っただけでは本文は出ない
+
+**一番ハマったところ。** `enterEmptyScreenPage()` / `enterTeleprompterPage()` でページに
+遷移しても、それだけでは文字が描画されない。これらのページは firmware の `inscription.h`
+に対応した状態フラグを持っていて、初期値の `TeleprompterStatus.READY` は SDK のソースに
+そのまま「空画面。文章も表示されない」と書かれている。
+
+```kotlin
+enum class TelepromptStatus {
+    READY,    // 空画面。文章も表示されない  ← 初期値
+    STARTED,  // 再生アイコンになる
+    PAUSED,   // 停止アイコンになる
+}
+```
+
+なので `sendEmptyScreenStatus(STARTED)` / `sendTeleprompterStatus(...)` を挟む必要がある。
+ドキュメントの Getting Started には「ページを開いてからコンテンツを送る」としか書かれて
+おらず状態の話が出てこないので、これを知らないと「ページは出るのに文字が出ない」で延々
+悩むことになる。`TextSurface` がこの順序を持っている。
+
+### 画像は 196x196 まで。それが表示サイズの上限
 
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
+`sendImage` のパケットは width / height / データの3つだけで、**拡大率も表示位置も持たない**
+（`PacketCommandUtils.ImageDisplayKey` 参照）。つまりグラス上で大きく見せる手段は
+196x196 のバッファを使い切ることだけ。
+
+そのため既定は `FitMode.FILL`（正方形に切り取る）。4:3 の写真を `FIT` で内接させると
+196x147 でバッファの 75% しか使わないが、`FILL` なら 100% 使える。プレビューに使用率を
+出しているので選ぶときに分かる。
+
 SDK が輝度の上位3bitだけを使う（8階調）ので、プレビューも同じ量子化をかけて表示している。
 
 ディザリングは既定でオフ。転送は量子化後の RLE 圧縮なので、ディザをかけると run が
 消えて圧縮が効かなくなり、送信が大幅に遅くなる。
+
+### 送信完了は観測できない
+
+`sendImage` も `send*Content` も内部でキューに積んで即座に返る。SDK に完了を知る手段が
+無いので、UI で「○秒で送信完了」とは出せない（出すと投入までの時間を転送時間と誤認する）。
