@@ -694,6 +694,10 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 val total = frameCount
                 scope.launch {
                     try {
+                        // キャンバスを開いたままだと画像ページの上に残る恐れがある。
+                        // 「画像が出ない」の原因がサイズなのか重なりなのか
+                        // 分からなくなるので、先に必ず閉じる
+                        session.closeCanvas()
                         // ページ遷移は1回だけ。毎回入り直すと 250ms の待ちが
                         // 測定値の大半になり、1枚あたりの時間が見えなくなる
                         session.enterImagePage()
