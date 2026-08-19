@@ -3,7 +3,7 @@
 SABERA スマートグラスの App SDK を実機で試すための Android アプリ。
 SDK の機能をひとつずつ動かして確かめる台として使う。
 
-> 現在は Android のみ。テキスト表示・画像送信・6DoF (IMU) の3機能まで実装している。
+> 現在は Android のみ。
 
 ## できること
 
@@ -12,6 +12,9 @@ SDK の機能をひとつずつ動かして確かめる台として使う。
 | Hello / World | グラスに文字を出す。耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる | `enterEmptyScreenPage` / `sendEmptyScreenStatus` / `sendEmptyScreenContent` / `gestureEvents` |
 | 写真 | 端末のギャラリーから選んだ写真をグレースケールに変換してグラスに出す | `enterImageDisplayPage` / `sendImage` |
 | 6DoF | サンプルレートと欠損の計測 / ヨードリフト量の計測 / 姿勢のリアルタイム表示 / 首の動きでグラスを操作 | `startImuData` / `stopImuData` / `imuData` / `imuDataStarted` |
+| ナビ | 案内文と地図画像。`sendNavi` と `sendNaviLargeImage` でどこまで大きい地図が通るかを探る | `enterNavigationPage` / `sendNaviStatus` / `sendNavi` / `sendNaviLargeImage` |
+| 北 | 端末の回転ベクトルから絶対方位を求め、常に北を指す矢印をグラスに出す | `sendNaviCourse` / `sendCanvas` |
+| パラパラ | 同じ絵を3つの経路で送って比べる。文字グリッド / `sendImage` / `sendCanvasImage`。解像度と fps を変えられる | `sendCanvas` / `sendCanvasElements` / `sendImage` / `sendCanvasImage` |
 
 どの画面にも受信したジェスチャーのログを常に出している。
 実機で「タップが届いていないのか / 種別が違うのか / そもそも購読できていないのか」を切り分けるのに使う。
@@ -141,7 +144,7 @@ IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateO
 つまり `sendImage` の 196x196 は**画面の横幅の3分の1程度しか占めない**。
 画像が小さく見えるのは仕様であって、送り方の問題ではない。
 
-**SDK 0.2.1 以降は `sendCanvasImage` でもっと大きい画像を置ける。** 下記参照。
+**SDK 0.4.0 以降は `sendCanvasImage` でもっと大きい画像を置ける。** 下記参照。
 
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
 `sendImage` のパケットは width / height / データの3つだけで、**拡大率も表示位置も持たない**
@@ -186,10 +189,62 @@ require(width * height * 2 + encodedBitmap.size <= MAX_IMAGE_BUDGET)
 - 置けるのは**1枚だけ**。送るたび前の画像は破棄される
 - 画像は**テキスト要素の背面**に描かれる
 - **ナビの全体ルート画像とバッファを共有**しているため、ナビ表示中は使えない
-- 複数パケットに分かれるので、大きいほど表示まで時間がかかる（アニメーションには不向き）
+- 複数パケットに分かれるので、大きいほど表示まで時間がかかる
 - こちらの分割は先頭チャンクが `200 - 8 = 192` バイトで、単一チャンクのときは
   専用の `SINGLE_PACKET` マーカーを使う。**`sendImage` 側にある「単一チャンクで
   LAST マーカーが出ない」不具合はこの経路では直っている**
+
+### sendCanvasImage で動かすと fps は 1 前後まで落ちる
+
+パラパラタブの3番目の区画がこれを測る。**大きさと fps は取引になっていて、両立しない。**
+黒地に白の線画（2値）を1周24コマ、パケット1個 35ms として見積もった値:
+
+| 大きさ | 画素 | `w*h*2` | 圧縮後 | パケット | 1コマ | 上限 fps |
+|---|---|---|---|---|---|---|
+| 96x60 | 5,760 | 11,520 | 約 250B | 2 | 70ms | 14 |
+| 192x120 | 23,040 | 46,080 | 約 900B | 5 | 175ms | 5.7 |
+| 320x200 | 64,000 | 128,000 | 約 2.3kB | 12 | 420ms | 2.4 |
+| 448x280 | 125,440 | 250,880 | 約 4.3kB | 22 | 770ms | 1.3 |
+| 512x320 | 163,840 | 327,680 | 約 5.8kB | 29 | 1,015ms | 1.0 |
+| 544x340 | 184,960 | 369,920 | 約 6.5kB | 32 | 1,120ms | 0.9 |
+
+**544x340 が線画での実質的な上限。** 予算の残りが 10,080B しかなく、そのうち
+RLE の下限（画素数/32 = 5,780B）が先に埋まるので、自由に使えるのは 4,300B しかない。
+線画5題材×24コマで実測した最悪コマが 6,474B なので、**残り 3,600B で通っている**。
+写真のような絵ならここで落ちる。
+
+**予算は「一番重いコマ」で見ないと再生の途中で落ちる。** 圧縮後サイズはコマごとに違い、
+題材によって最悪コマの位置も変わる（同じ 544x340 で 5,907B〜6,474B の幅がある）。
+アプリは再生前に1周ぶんを全部ラスタライズして圧縮後サイズを数え、最悪コマで検算している。
+SDK の `require` は**呼び出しスレッドに同期的に飛ぶ**ので、検算せずに送ると
+そのコマで即座にクラッシュする。
+
+3経路の使い分けはこうなる:
+
+| 経路 | 解像度 | fps | 向くもの |
+|---|---|---|---|
+| `sendCanvas` の文字グリッド | 17x10 程度 | 24〜38 | 動き。絵は文字なので粗い |
+| `sendImage` | 196x196 | 3〜10 | 静止画。位置は左上固定 |
+| `sendCanvasImage` | 544x340 | 0.9〜14 | 大きい静止画。任意座標に置ける |
+
+### lock を取っても複数パケットの混線は防げない
+
+`sendImage` も `sendCanvasImage` も、内部は
+`sendCommands(...)` → `viewModelScope.launch(Dispatchers.IO)` で**即座に返る**。
+`GlassSession` の `Mutex` を通しても、抜けた時点ではまだ1バイトも出ていない。
+
+つまり転送中に次を呼べば、画像Aの中間チャンクと画像Bの先頭チャンクが
+`PacketQueue` で交互に並び、ファーム側の再組立が壊れる。**これを防ぐ手段は
+「呼び出し側が推定転送時間ぶん間隔を空ける」以外に無い。** SDK にバックプレッシャーも
+完了通知も無いので、送りすぎても詰まったことすら分からない（脱出口は
+`cancelPendingPackets` だけ）。
+
+`GlassSession` の lock が実際に守っているのは、`showText` / `showNavi` の
+「ページに入る → 状態 → 本文」という 250ms 待ちを含む列の**間に割り込まない**ことだけ。
+
+なお `sendCanvasImage` は3bit RLE の圧縮を**呼び出しスレッドの上で**やってから launch する。
+544x340 は18万画素あるので、Main で呼ぶとスライダーが引っかかる。
+`GlassSession` 側で `Dispatchers.Default` に逃がしている。
 
 ### グラス側が受信しているかは setProd(false) で見える
 
@@ -252,6 +307,13 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 | `glass/TextSurface.kt` | テキストをどのページに、どの状態で出すかの唯一の切り替え点 |
 | `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。`FitMode` で切り取りか内接かを選ぶ |
 | `image/GrayscaleImage.kt` | 変換結果と、実機と同じ8階調のプレビュー生成 |
+| `image/ThreeBitRle.kt` | SDK の 3bit RLE の写し。`sendImage` の分割でパケット数を数える。SDK の `ThreeBitRleCodec` は AAR に残っていない |
+| `flipbook/FlipbookScene.kt` | パラパラ漫画の題材。正規化座標で持ち、文字グリッドと画素の両方に同じ絵を出す |
+| `flipbook/CanvasGrid.kt` | 文字グリッドをキャンバス要素に載せる。`12N + T <= 185` の予算検算 |
+| `flipbook/CanvasImageBudget.kt` | `sendCanvasImage` の予算検算と所要時間の見積り。1周ぶんの最悪コマを数える |
+| `flipbook/PacingStats.kt` | 送出レートの集計器。Compose の state ではない |
+| `ui/CanvasImagePanel.kt` | パラパラタブの `sendCanvasImage` 区画。大きさと fps の取引を測る |
+| `compass/PhoneHeading.kt` | 端末の回転ベクトルから絶対方位を求める。平置きと立てで軸を切り替える |
 | `ui/AppRoot.kt` | 接続状態の監視とジェスチャー購読の置き場所 |
 | `imu/ImuStats.kt` | 6DoF の集計器。レート・欠損・ヨードリフト・首の動きの検出。Compose の state ではない |
 | `ui/ImuScreen.kt` | 6DoF タブ。全サンプルを集計器に流し、表示だけ約15Hz に間引く |
@@ -263,11 +325,13 @@ SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
 
 | 機能 | API | 追加 | 備考 |
 |---|---|---|---|
-| キャンバスへの画像 | `sendCanvasImage(x, y, w, h, grayscale)` | 0.4.0 | **196x196 の上限を超えられる**（上記参照）。**ファーム 2.2.0 以上** |
 | マイクのストリーミング | `startMicStreaming` / `micAudio: SharedFlow<ByteArray>` | 0.4.0 | Opus のデコードは SDK 側。**Android はそのまま PCM が取れる** |
 | 分割レイアウト | `sendLayout` / `sendLayoutTexts` / `closeLayout` | 0.2.0 | 全画面・上下・左右・4分割。**ファーム 2.0.0 以上** |
 | 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（下記） |
 | AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
+
+`sendCanvasImage` はパラパラタブで生成した線画しか通していない。**写真を大きく出す経路としては未検証**で、
+`GrayscaleConverter` の出力（196x196 上限のまま）を繋ぎ替えれば 4倍の面積で出せるはず。
 
 ### ナビの画像サイズ上限（調査中）
 

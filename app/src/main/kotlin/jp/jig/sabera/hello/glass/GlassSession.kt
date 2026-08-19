@@ -5,11 +5,13 @@ import app.jigglass.glass.CommandManager
 import app.jigglass.glass.GestureType
 import app.jigglass.glass.GlassClient
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 private const val TAG = "SABERA"
 
@@ -201,16 +203,47 @@ class GlassSession(val client: GlassClient) {
     /**
      * 画像を1枚送る。ページ遷移はしないので、事前に [enterImagePage] を呼んでおくこと。
      *
-     * sendLock を取るのは順序のためではなく、混線を防ぐため。SDK の sendImage には
-     * 前の転送を待つ仕組みが無く、待たずに2回呼ぶと画像Aの中間チャンクと画像Bの
-     * 先頭チャンクがキューで交互に並び、ファーム側の再組立が破綻する。
+     * **この lock は混線を防がない。** SDK の sendImage は分割したパケット列を
+     * `viewModelScope.launch` に投げて即座に返るので、lock を抜けた時点ではまだ
+     * 1バイトも出ていない。待たずに2回呼べば、画像Aの中間チャンクと画像Bの先頭チャンクが
+     * ファームに交互に届いて再組立が壊れる。**混線を防げるのは呼び出し側が転送時間ぶん
+     * 間隔を空けることだけ**で、SDK にも lock にもその手段は無い。
      *
-     * ただしこの lock で守れるのは「キューに積む順番」だけである。積み終わった時点で
-     * 戻ってくるので、戻り値が返っても転送は終わっていない。
+     * ここで lock を取っているのは、showText や showNavi の「ページに入る→状態→本文」という
+     * 250ms 待ちを含む列の**間に割り込まない**ため。守れるのはそこまで。
      */
     suspend fun sendImageFrame(width: Int, height: Int, grayscale: ByteArray) {
         sendLock.withLock {
             commands.sendImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * キャンバスに画像を1枚置く。ページ遷移は要らない（送ると画面が切り替わる）。
+     *
+     * sendImage の 196x196 という上限はこちらには無く、代わりに
+     * `w*h*2 + 圧縮後サイズ <= 380000` というグラスの画像バッファで縛られる。
+     * この require は**呼び出しスレッドに同期的に飛ぶ**ので、送る前に
+     * [jp.jig.sabera.hello.flipbook.CanvasImageBudget.check] で検算しておくこと。
+     *
+     * [sendImageFrame] と同じく **lock は混線を防がない**。連続で送るなら
+     * 1枚ぶんの推定転送時間を空けること。
+     *
+     * Dispatchers.Default に逃がしているのは、SDK が呼び出しスレッドの上で
+     * 3bit RLE の圧縮をしてから launch するため。544x340 は 18万画素あり、
+     * Main で回すとスライダーが引っかかる。
+     *
+     * 注意が2つ:
+     *  - 置けるのは1枚だけで、テキスト要素の**背面**に描かれる。文字グリッドを
+     *    出した後だと画像の上に文字が残るので、先に [clearCanvas] すること
+     *  - ナビの全体ルート画像とバッファを共有している。ナビ表示中は使えない
+     */
+    suspend fun sendCanvasImage(x: Int, y: Int, width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            Log.d(TAG, "sendCanvasImage: ($x, $y) ${width}x$height (${grayscale.size} bytes)")
+            withContext(Dispatchers.Default) {
+                commands.sendCanvasImage(x, y, width, height, grayscale)
+            }
         }
     }
 
