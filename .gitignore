@@ -19,3 +19,6 @@ key.properties
 
 # macOS
 .DS_Store
+
+# テスト画像は make_navi_images.py で生成する（seed 固定で再現可能）
+testdata/navi/*.png
