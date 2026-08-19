@@ -81,6 +81,7 @@ private fun ConnectedScreen(
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello / World") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("ナビ") })
             }
             when (tab) {
@@ -92,6 +93,8 @@ private fun ConnectedScreen(
                     onDisconnect = onDisconnect,
                 )
                 1 -> PhotoScreen(session = session, gestures = gestures)
+                // 6DoF の受信はこの画面が構成から外れた時点で止まる（ImuScreen 側の効果）
+                else -> ImuScreen(session = session, gestures = gestures)
                 else -> NaviScreen(session = session, gestures = gestures)
             }
         }

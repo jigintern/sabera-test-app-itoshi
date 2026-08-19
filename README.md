@@ -3,7 +3,7 @@
 SABERA スマートグラスの App SDK を実機で試すための Android アプリ。
 SDK の機能をひとつずつ動かして確かめる台として使う。
 
-> 現在は Android のみ。テキスト表示と画像送信の2機能まで実装している。
+> 現在は Android のみ。テキスト表示・画像送信・6DoF (IMU) の3機能まで実装している。
 
 ## できること
 
@@ -11,8 +11,9 @@ SDK の機能をひとつずつ動かして確かめる台として使う。
 |---|---|---|
 | Hello / World | グラスに文字を出す。耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる | `enterEmptyScreenPage` / `sendEmptyScreenStatus` / `sendEmptyScreenContent` / `gestureEvents` |
 | 写真 | 端末のギャラリーから選んだ写真をグレースケールに変換してグラスに出す | `enterImageDisplayPage` / `sendImage` |
+| 6DoF | サンプルレートと欠損の計測 / ヨードリフト量の計測 / 姿勢のリアルタイム表示 / 首の動きでグラスを操作 | `startImuData` / `stopImuData` / `imuData` / `imuDataStarted` |
 
-どちらの画面にも受信したジェスチャーのログを常に出している。
+どの画面にも受信したジェスチャーのログを常に出している。
 実機で「タップが届いていないのか / 種別が違うのか / そもそも購読できていないのか」を切り分けるのに使う。
 
 ## 前提条件
@@ -105,6 +106,34 @@ SDK 内部では `enterXPage()` と `sendXContent()` がそれぞれ独立した
 イベントは捨てられる**。`ui/AppRoot.kt` で `session` をキーに購読することで、
 タブ切り替えでは切れず、切断時には自動でキャンセルされる。
 
+### 6DoF は購読を確立してから開始する。止め忘れは帯域を食う
+
+`imuData` は `replay = 0, extraBufferCapacity = 32, onBufferOverflow = DROP_OLDEST` の
+`SharedFlow`（`CommandManagerImpl`）。`gestureEvents` と同じく**購読者がゼロの間の
+サンプルは捨てられる**ので、`onSubscription` の中で `startImuData()` を呼ぶ。
+`glass/GlassSession.kt` の `collectImuData` がその形になっている。
+
+購読をやめてもグラスは送り続ける。画像送信は50〜150パケットを連続で送るため、
+止め忘れると写真タブと帯域を食い合う。`collectImuData` は `finally` で
+`stopImuData()` を発行する（キューに積むだけで suspend しないのでキャンセル後でも通る）。
+
+`startImuData()` が効くのは FEATURE_VERSION 2.0.0 以上のファームだけで、
+それ未満だと**1件も届かないまま黙る**。切り分けのために `imuDataStarted` と
+受信件数を常に画面に出し、0件のときはバージョン要件を画面に明記している。
+
+### 6DoF は1サンプルごとに state を書き換えない
+
+IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateOf` を更新すると
+レートが上がるほど再コンポーズが詰まり、「アプリが重い」という別の問題に
+すり替わって計測そのものが信用できなくなる。
+集計は `imu/ImuStats.kt` の普通のクラスが全サンプルに対して行い、
+画面に流すスナップショットだけを約15Hz に間引いている。
+
+間隔の計算に使うのは受信時刻ではなく `timestampMs`。BLE の受信ゆらぎと
+グラス側の生成周期は別物で、混ぜると何を測っているか分からなくなる。
+`yawDegrees` は ±180 で折り返すので、差が ±180 を超えたら 360 を足し引きして
+連続値に直してから累積する。やらないと折り返しの瞬間に 360 度ぶんの偽ドリフトが出る。
+
 ### 画像は 196x196 まで。それが表示サイズの上限
 
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
@@ -137,6 +166,9 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 | `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。`FitMode` で切り取りか内接かを選ぶ |
 | `image/GrayscaleImage.kt` | 変換結果と、実機と同じ8階調のプレビュー生成 |
 | `ui/AppRoot.kt` | 接続状態の監視とジェスチャー購読の置き場所 |
+| `imu/ImuStats.kt` | 6DoF の集計器。レート・欠損・ヨードリフト・首の動きの検出。Compose の state ではない |
+| `ui/ImuScreen.kt` | 6DoF タブ。全サンプルを集計器に流し、表示だけ約15Hz に間引く |
+| `ui/AttitudeView.kt` | ピッチとヨーの水平儀風表示 |
 
 ## 今後試せること
 
@@ -144,7 +176,6 @@ SDK 0.1.0 時点で手つかずの機能。次に触る人の入口として。
 
 | 機能 | API | 追加バージョン |
 |---|---|---|
-| 6DoF (IMU) | `startImuData` / `imuData: SharedFlow<ImuData>` | 0.1.0 |
 | ナビゲーション | `enterNavigationPage` / `sendNavi` / `sendNaviLargeImage` | 0.0.14 |
 | マイク | `openGlassMic` / `closeGlassMic` | — |
 | 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — |
