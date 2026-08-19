@@ -11,6 +11,29 @@ import kotlin.math.roundToInt
 /** グラス側のバッファは静的で、これを超えるサイズはファームに弾かれて何も表示されない */
 const val MAX_GLASS_DIM = 196
 
+/**
+ * ナビの地図（sendNavi）として送れる一辺の上限。
+ *
+ * SDK の NaviKey.createNaviPacket は幅・高さを createBytePacket で載せる。これは
+ * 「長さ2バイトと宣言しておいて下位バイトにしか値を入れない」パケットなので、
+ * 256 以上は表現できない。SDK 側にも require(bitmapWidth < 256) がある。
+ * 表示できるかどうかではなく、プロトコルで決まっている上限。
+ */
+const val NAVI_MAP_MAX_DIM = 255
+
+/**
+ * sendNaviLargeImage で試せる一辺の上限。これはプロトコル上の上限ではない。
+ *
+ * large 側の幅・高さは createShortPacket（16bit リトルエンディアン）で載るので
+ * 65535 まで表現できる。実際に描けるかはグラス側のバッファ次第で SDK からは分からず、
+ * 実機で試すしかない。512 は「1画素1バイトで 256KB、RLE が全く効かないと
+ * 1300 パケット超（1パケットごとに 10ms 待つ）」という、手で試せる現実的な範囲の端。
+ */
+const val NAVI_LARGE_MAX_DIM = 512
+
+/** 探索の下限。これ以下は小さすぎて上限の判定に使えない */
+const val NAVI_MIN_DIM = 64
+
 /** 量子化後の階調数（SDK が輝度の上位3bitだけを使うため） */
 private const val LEVELS = 8
 
