@@ -136,6 +136,11 @@ IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateO
 
 ### 画像は 196x196 まで。それが表示サイズの上限
 
+**グラスの画面は 576x360 px。** SDK 0.2.1 で追加された Canvas API の KDoc に
+「座標はキャンバス左上を原点にした px で、576x360 の範囲に収める」と明記されている。
+つまり `sendImage` の 196x196 は**画面の横幅の3分の1程度しか占めない**。
+画像が小さく見えるのは仕様であって、送り方の問題ではない。
+
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
 `sendImage` のパケットは width / height / データの3つだけで、**拡大率も表示位置も持たない**
 （`PacketCommandUtils.ImageDisplayKey`）。つまりグラス上で大きく見せる手段は
@@ -149,6 +154,22 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 ディザリングは既定でオフ。転送は量子化後の RLE 圧縮なので、ディザをかけると run が消えて
 圧縮が効かなくなり、送信が大幅に遅くなる。
+
+### グラス側が受信しているかは setProd(false) で見える
+
+`GlassesSDK.setProd(false)` にすると verbose 動作になり、**グラス本体のファームウェアログが
+logcat に流れてくる**。「送ったのにグラスに出ない」を切り分けられる唯一の手段。
+
+```
+[os][W][ble_stream_read][2848]: svc_id 1, cmd_id 19
+[bat_drv][I] ... percent:91% ...
+```
+
+`cmd_id` は `PacketCommandUtils.CMDKey` の値と対応する。SDK 0.2.1 からは
+`sendCommand` のパケット HEX、未接続で送らなかったこと、書き込み用 characteristic が
+未取得だったことも SDK 側がログに出すようになった。
+
+本番では `setProd(true)` に戻すこと。
 
 ### 送信完了は観測できない
 
@@ -172,18 +193,36 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 ## 今後試せること
 
-SDK 0.1.0 時点で手つかずの機能。次に触る人の入口として。
+SDK 0.2.1 時点で手つかずの機能。次に触る人の入口として。
 
-| 機能 | API | 追加バージョン |
+| 機能 | API | 追加バージョン | 備考 |
+|---|---|---|---|
+| 分割レイアウト | `sendLayout` / `sendLayoutTexts` / `closeLayout` | 0.2.0 | 全画面・上下・左右・4分割。**ファーム 2.0.0 以上** |
+| 自由配置キャンバス | `sendCanvas` / `sendCanvasElements` / `clearCanvas` | 0.2.0 | 矩形＋テキストを8個まで任意座標に。**ファーム 2.1.0 以上** |
+| マイク | `openGlassMic` / `closeGlassMic` | — | |
+| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る Flow が非公開 |
+| AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
+
+**レイアウトとキャンバスはこのグラスのファームでは動かない見込み。** 6DoF が
+FEATURE_VERSION 2.0.0 未満で動かないことが確認できているため、同じ要件のこれらも
+同様と考えられる。ファーム更新後に試す。
+
+どちらもテキスト専用で、画像は置けない。テキストの合計は**190バイト程度**まで
+（分割送信できないため）。
+
+### ナビの画像サイズ上限（調査中）
+
+`sendNaviLargeImage` は幅・高さを16bitで送るため、プロトコル上は 65535 まで乗る
+（`sendNavi` の地図は1バイトなので255まで）。`sendImage` の 196x196 より大きい画像を
+出せる可能性がある。
+
+実機で確認できたのはここまで:
+
+| 経路 | サイズ | 結果 |
 |---|---|---|
-| ナビゲーション | `enterNavigationPage` / `sendNavi` / `sendNaviLargeImage` | 0.0.14 |
-| マイク | `openGlassMic` / `closeGlassMic` | — |
-| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — |
-| AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — |
+| `sendNavi` の地図 | 196x196 | **表示された**（四隅まで欠けなし） |
 
-`sendNaviLargeImage` は幅・高さを16bitで送っており、KDoc にも上限が書かれていない。
-`sendImage` の 196x196 より大きい画像を出せる可能性がある（未検証）。
-ただし描画先はナビページなので、ナビの UI が一緒に出るはず。
+続きの手順とテスト画像は [testdata/navi/README.md](testdata/navi/README.md) を参照。
 
 API の一覧は [SDK ドキュメント](https://jig-sabera.github.io/sabera-sdk/) を参照。
 実際の挙動は AAR の sources jar を読むのが早い。
