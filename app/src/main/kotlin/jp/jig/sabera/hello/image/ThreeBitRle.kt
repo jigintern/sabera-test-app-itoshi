@@ -19,7 +19,11 @@ object ThreeBitRle {
     /** 連長の上限。5bit なので 32 */
     private const val MAX_RUN = 32
 
-    /** 分割送信の先頭チャンク */
+    /**
+     * 分割送信の先頭チャンク。**sendImage の値**であることに注意。
+     * sendCanvasImage は 192 バイトなので
+     * [jp.jig.sabera.hello.flipbook.CanvasImageBudget.packetCount] を使うこと。
+     */
     private const val FIRST_CHUNK = 64
 
     /** 2個目以降のチャンク */

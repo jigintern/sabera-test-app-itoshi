@@ -136,6 +136,8 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
 
     var fps by remember { mutableStateOf(10f) }
     var playing by remember { mutableStateOf(false) }
+    // 画像の再生はパネル側のループが読む。グリッドと排他にするためここで持つ
+    var imagePlaying by remember { mutableStateOf(false) }
     var loop by remember { mutableStateOf(true) }
     var frame by remember { mutableStateOf(0) }
 
@@ -271,7 +273,10 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
     // タブを離れたら必ず止める。fire-and-forget なので、画面が消えても
     // ループが生きていればキューに積まれ続ける
     DisposableEffect(Unit) {
-        onDispose { playing = false }
+        onDispose {
+            playing = false
+            imagePlaying = false
+        }
     }
 
     Column(
@@ -582,9 +587,11 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
             Button(
                 onClick = {
                     error = null
+                    // 同じキューを取り合うので、どちらか一方しか回さない
+                    imagePlaying = false
                     playing = !playing
                 },
-                enabled = budget.fits,
+                enabled = budget.fits && !imagePlaying,
             ) { Text(if (playing) "停止" else "再生") }
             OutlinedButton(
                 onClick = {
@@ -620,6 +627,21 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
 
         Spacer(Modifier.height(12.dp))
         PacingPanel(pacing, fps.roundToInt())
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(12.dp))
+
+        /* ---- sendCanvasImage ---- */
+        CanvasImagePanel(
+            session = session,
+            scene = scene,
+            frameCount = frameCount,
+            gridPlaying = playing,
+            playing = imagePlaying,
+            onPlayingChange = { imagePlaying = it },
+            onStopGrid = { playing = false },
+        )
 
         Spacer(Modifier.height(20.dp))
         HorizontalDivider()
@@ -743,7 +765,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                     }
                 }
             },
-            enabled = !measuring && !playing,
+            enabled = !measuring && !playing && !imagePlaying,
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (measuring) {
@@ -754,7 +776,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 Text("sendImage で連続送信して測る")
             }
         }
-        if (playing) {
+        if (playing || imagePlaying) {
             Spacer(Modifier.height(4.dp))
             Text(
                 "キャンバスを再生したまま画像を送ると同じキューを取り合って両方壊れる。" +
@@ -783,6 +805,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
         OutlinedButton(
             onClick = {
                 playing = false
+                imagePlaying = false
                 scope.launch {
                     runCatching {
                         session.closeCanvas()
