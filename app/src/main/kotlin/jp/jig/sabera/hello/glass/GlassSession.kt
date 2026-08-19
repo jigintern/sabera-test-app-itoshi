@@ -121,6 +121,87 @@ class GlassSession(val client: GlassClient) {
         }
     }
 
+    /**
+     * 画像ページに入る。連続送信の前に1回だけ呼ぶ。
+     *
+     * [showImage] は毎回ページに入り直して 250ms 待つ。1枚出すだけならそれでいいが、
+     * パラパラ漫画の fps を測るときはその 250ms が測定値の大半になってしまい、
+     * 「1枚あたり何ミリ秒か」が分からなくなる。入るのと送るのを分けてある。
+     */
+    suspend fun enterImagePage() {
+        sendLock.withLock {
+            Log.d(TAG, "enterImagePage")
+            commands.enterImageDisplayPage()
+            delay(PAGE_SETTLE_MS)
+        }
+    }
+
+    /**
+     * 画像を1枚送る。ページ遷移はしないので、事前に [enterImagePage] を呼んでおくこと。
+     *
+     * sendLock を取るのは順序のためではなく、混線を防ぐため。SDK の sendImage には
+     * 前の転送を待つ仕組みが無く、待たずに2回呼ぶと画像Aの中間チャンクと画像Bの
+     * 先頭チャンクがキューで交互に並び、ファーム側の再組立が破綻する。
+     *
+     * ただしこの lock で守れるのは「キューに積む順番」だけである。積み終わった時点で
+     * 戻ってくるので、戻り値が返っても転送は終わっていない。
+     */
+    suspend fun sendImageFrame(width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            commands.sendImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * キャンバスを1フレーム分まとめて送る。全消しと全描画がこの1パケットに入る。
+     *
+     * キャンバスにはページ遷移コマンドが無い（enterCanvasPage は SDK に存在しない）。
+     * sendCanvas が CONTROL_CLEAR を同梱していて、これ自体が画面を作り直す。
+     */
+    suspend fun sendCanvasFrame(elements: List<CommandManager.CanvasElement>) {
+        sendLock.withLock {
+            commands.sendCanvas(elements)
+        }
+    }
+
+    /** 既存の要素を残したまま、指定した id だけ差し替える */
+    suspend fun sendCanvasElements(elements: List<CommandManager.CanvasElement>) {
+        sendLock.withLock {
+            commands.sendCanvasElements(elements)
+        }
+    }
+
+    /** キャンバスの中身だけ消す。キャンバス自体は開いたまま */
+    suspend fun clearCanvas() {
+        sendLock.withLock {
+            Log.d(TAG, "clearCanvas")
+            commands.clearCanvas()
+        }
+    }
+
+    /** キャンバスを閉じて元の画面に戻す */
+    suspend fun closeCanvas() {
+        sendLock.withLock {
+            Log.d(TAG, "closeCanvas")
+            commands.closeCanvas()
+        }
+    }
+
+    /**
+     * まだ送っていないパケットを捨てる。
+     *
+     * SDK のキューは上限なしの ArrayDeque で、drop も詰まり検知も無い。リンクの
+     * 処理速度を超えて送り続けるとキューが延々と伸び、表示だけが遅れていく。
+     * エラーは何も出ないので、暴走したときの脱出口はここしかない。
+     *
+     * 転送中の画像の途中で呼ぶと切れたゴミがグラスに残る。捨てた後は
+     * [clearCanvas] なり [showText] なりで画面を作り直すこと。
+     */
+    suspend fun cancelPendingPackets() {
+        Log.d(TAG, "cancelPendingPackets")
+        client.cancelPendingPackets()
+    }
+
     /** ナビページを開いて案内中にする。案内内容は showNavi / showNaviLargeImage で送る */
     suspend fun showNaviPage() {
         sendLock.withLock {

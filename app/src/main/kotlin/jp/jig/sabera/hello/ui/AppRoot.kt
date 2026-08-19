@@ -27,6 +27,16 @@ import jp.jig.sabera.hello.glass.GlassSession
 const val TEXT_HELLO = "Hello"
 const val TEXT_WORLD = "World"
 
+/**
+ * タブ番号を並び順に直すための表。
+ *
+ * タブ番号は機能ごとに固定で振ってあり、ブランチによっては欠番が出る（番号 4 は
+ * 別のブランチが使う）。ScrollableTabRow の selectedTabIndex が求めているのは
+ * 番号ではなく子の位置なので、番号のまま渡すと欠番のぶんだけずれて
+ * インジケータが出なくなる。タブを足したらここにも番号を足すこと。
+ */
+private val TAB_NUMBERS = listOf(0, 1, 2, 3, 5)
+
 @Composable
 fun AppRoot(manager: GlassManager) {
     // 接続状態はこの Flow ひとつだけを見る
@@ -82,11 +92,17 @@ private fun ConnectedScreen(
             // タブが増えて固定幅の TabRow では収まらなくなったので Scrollable にした。
             // 右端のタブが初期表示で画面外に出るため、ラベルは引き続き短く保つこと。
             // タブを足すときは番号を重複させないよう注意（過去に main が壊れた）。
-            ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
+            // indexOf は知らない番号だと -1 を返す。既定のインジケータは
+            // 添字の上限しか見ていないので、負の値を渡すとその場で落ちる。
+            // タブ番号は rememberSaveable で復元されるため、別ブランチの番号が
+            // 残っていることが実際にあり得る
+            val tabIndex = TAB_NUMBERS.indexOf(tab).coerceAtLeast(0)
+            ScrollableTabRow(selectedTabIndex = tabIndex, edgePadding = 0.dp) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
                 Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("ナビ") })
+                Tab(selected = tab == 5, onClick = { tab = 5 }, text = { Text("パラパラ") })
             }
             when (tab) {
                 0 -> HelloWorldScreen(
@@ -99,6 +115,8 @@ private fun ConnectedScreen(
                 1 -> PhotoScreen(session = session, gestures = gestures)
                 // 6DoF の受信はこの画面が構成から外れた時点で止まる（ImuScreen 側の効果）
                 2 -> ImuScreen(session = session, gestures = gestures)
+                // 再生は FlipbookScreen 側で構成から外れた時点で止まる
+                5 -> FlipbookScreen(session = session, gestures = gestures)
                 else -> NaviScreen(session = session, gestures = gestures)
             }
         }
