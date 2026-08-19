@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "sabera-hello-app"
+rootProject.name = "sabera-test-app-itoshi"
 include(":app")

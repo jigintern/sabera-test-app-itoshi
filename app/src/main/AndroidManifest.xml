@@ -17,7 +17,7 @@
 
     <application
         android:name=".SaberaApp"
-        android:label="SABERA Hello"
+        android:label="SABERA Test"
         android:supportsRtl="true"
         android:theme="@style/Theme.SaberaHello">
 

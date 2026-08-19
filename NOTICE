@@ -1,0 +1,9 @@
+SABERA Test App
+
+Copyright 2026 株式会社jig.jp
+
+このリポジトリのコードは Apache License 2.0 で提供されます。
+一部は jig-SABERA/sabera-sdk のサンプルコード（Apache License 2.0）から派生しています。
+
+依存する Sabera App SDK 本体（jp.jig.sabera.app.sdk:*、AAR）はこのリポジトリには含まれず、
+Apache License 2.0 の対象外です。SDK 本体の利用には別途 SDK 利用規約が適用されます。
