@@ -77,6 +77,41 @@ fun AttitudeView(pitchDegrees: Float, yawDegrees: Float, modifier: Modifier = Mo
 }
 
 /**
+ * 方位盤を 1 枚だけ描く。
+ *
+ * 中身は [AttitudeView] の右半分と同じもの。指針は真上に固定で、盤の 0 の目盛りが
+ * 「基準の方位が今どちら側にあるか」を指す。北向き矢印のテストではこれがそのまま
+ * 「グラスに出している矢印」のプレビューになるので、描画を書き足さずに流用する。
+ */
+@Composable
+fun HeadingDial(
+    headingDegrees: Float,
+    title: String,
+    caption: String,
+    modifier: Modifier = Modifier,
+) {
+    val ground = MaterialTheme.colorScheme.surfaceVariant
+    val line = MaterialTheme.colorScheme.onSurface
+    val accent = MaterialTheme.colorScheme.primary
+
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(Modifier.fillMaxWidth().aspectRatio(1f)) {
+            drawYawIndicator(headingDegrees, ground, line, accent)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "$title ${format1(headingDegrees)}°",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            text = caption,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/**
  * 人工水平儀。機体マークを固定し、地平線のほうを動かす。
  * 上を向く（pitch が負）と地平線は視界の下に降りるので、符号を反転して y に足す。
  */

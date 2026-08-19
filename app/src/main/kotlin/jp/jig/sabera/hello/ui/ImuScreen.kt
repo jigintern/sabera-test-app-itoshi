@@ -52,8 +52,10 @@ import java.util.Locale
  * レートが上がるほど再コンポーズが詰まり、「アプリが重い」という別の問題に
  * すり替わって計測そのものが信用できなくなる。集計は全サンプルに対して行い、
  * 表示はここで間引く。
+ *
+ * 北向き矢印のタブも同じ事情なので internal にして共用する。
  */
-private const val UI_PUSH_INTERVAL_MS = 66L
+internal const val UI_PUSH_INTERVAL_MS = 66L
 
 private enum class ImuTest(val label: String) {
     RATE("① レート/欠損"),
@@ -459,9 +461,10 @@ private fun AxisSelector(title: String, selected: Int, onSelect: (Int) -> Unit) 
 }
 
 /* ---------------- 小物 ---------------- */
+/* 数値を並べるだけのものは他のテストタブでも同じ形で要るので internal にしてある */
 
 @Composable
-private fun StatRow(label: String, value: String) {
+internal fun StatRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = MaterialTheme.typography.bodySmall)
         Text(value, style = MaterialTheme.typography.bodyMedium)
@@ -469,7 +472,7 @@ private fun StatRow(label: String, value: String) {
 }
 
 @Composable
-private fun MonoRow(label: String, value: String) {
+internal fun MonoRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = MaterialTheme.typography.bodySmall)
         Text(
@@ -480,9 +483,9 @@ private fun MonoRow(label: String, value: String) {
     }
 }
 
-private fun format2(value: Float): String = String.format(Locale.US, "%.2f", value)
+internal fun format2(value: Float): String = String.format(Locale.US, "%.2f", value)
 
-private fun formatDuration(milliseconds: Long): String {
+internal fun formatDuration(milliseconds: Long): String {
     if (milliseconds <= 0L) return "0.0 秒"
     val seconds = milliseconds / 1000f
     return if (seconds < 60f) {

@@ -166,6 +166,20 @@ class RateMeter {
 
 /* ---------------- テスト2: ヨードリフト ---------------- */
 
+/**
+ * ±180 で折り返す角度の列を連続値に直すための増分。
+ *
+ * 折り返しをまたいだ差をそのまま足すと 360 度ぶんの偽の跳びが出る。
+ * 差が ±180 を超えたら逆回りだったとみなして 360 を足し引きする。
+ * ヨードリフトの累積でも北向き矢印でも同じ処理が要るので、ここに置いて共用する。
+ */
+fun unwrappedDelta(previousDegrees: Float, currentDegrees: Float): Double {
+    var delta = (currentDegrees - previousDegrees).toDouble()
+    if (delta > 180.0) delta -= 360.0
+    if (delta < -180.0) delta += 360.0
+    return delta
+}
+
 data class DriftStats(
     val running: Boolean,
     val elapsedMs: Long,
@@ -204,10 +218,7 @@ class YawDriftMeter {
         if (lastRawYaw.isNaN()) {
             unwrappedYaw = yawDegrees.toDouble()
         } else {
-            var delta = (yawDegrees - lastRawYaw).toDouble()
-            if (delta > 180.0) delta -= 360.0
-            if (delta < -180.0) delta += 360.0
-            unwrappedYaw += delta
+            unwrappedYaw += unwrappedDelta(lastRawYaw, yawDegrees)
         }
         lastRawYaw = yawDegrees
         currentRawYaw = yawDegrees
