@@ -59,6 +59,35 @@ class GlassSession(val client: GlassClient) {
             }
     }
 
+    /**
+     * 6DoF を購読する。購読を始めた時点で送信を開始し、キャンセルされたら止める。
+     *
+     * imuData も gestureEvents と同じ replay = 0 の SharedFlow（extraBufferCapacity = 32,
+     * DROP_OLDEST）なので、購読者がゼロの間に届いたサンプルは捨てられる。
+     * onSubscription の中で startImuData() を呼べば、購読が確立した後にしか
+     * 開始要求が出ないため、先頭のサンプルを取りこぼさない。
+     *
+     * sendLock は取らない。あれは「ページに入る→状態を送る→本文を送る」のような
+     * 順序が意味を持つ列を直列化するためのもので、開始・停止は単発のパケットである。
+     */
+    suspend fun collectImuData(onSample: (CommandManager.ImuData) -> Unit) {
+        try {
+            commands.imuData
+                .onSubscription {
+                    Log.d(TAG, "imuData subscribed -> startImuData")
+                    commands.startImuData()
+                }
+                .collect { sample -> onSample(sample) }
+        } finally {
+            // 購読をやめてもグラスは送り続ける。BLE の帯域を食い続けて写真の送信
+            // （50〜150パケット連続）と競合するので、抜けるときは必ず止める。
+            // stopImuData() はキューに積むだけで suspend しないため、
+            // キャンセル後の finally からでも確実に発行できる
+            Log.d(TAG, "imuData unsubscribed -> stopImuData")
+            commands.stopImuData()
+        }
+    }
+
     /** グラスにテキストを表示する */
     suspend fun showText(text: String) {
         subscribed.await() // lock の外で待つ。ここで待ってもデッドロックしない
