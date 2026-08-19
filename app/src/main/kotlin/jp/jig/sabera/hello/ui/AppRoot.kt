@@ -81,6 +81,7 @@ private fun ConnectedScreen(
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello / World") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("ナビ") })
             }
             when (tab) {
                 0 -> HelloWorldScreen(
@@ -90,7 +91,8 @@ private fun ConnectedScreen(
                     onDisplayTextChange = onDisplayTextChange,
                     onDisconnect = onDisconnect,
                 )
-                else -> PhotoScreen(session = session, gestures = gestures)
+                1 -> PhotoScreen(session = session, gestures = gestures)
+                else -> NaviScreen(session = session, gestures = gestures)
             }
         }
     }

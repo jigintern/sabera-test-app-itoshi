@@ -27,6 +27,12 @@ private const val PAGE_SETTLE_MS = 250L
 private const val STATUS_SETTLE_MS = 80L
 
 /**
+ * ナビ画面の表示言語。到着時刻ラベル等の表示切り替えに使われるだけで、画面遷移は起こさない。
+ * 送らないとファーム側の既定のままになるので、ページに入るたびに送っておく。
+ */
+private const val NAVI_LANGUAGE = "JPN"
+
+/**
  * 接続中の 1 台のグラスに対する操作をまとめたもの。
  * 接続が切れて繋ぎ直すと、UI 側で新しいインスタンスが作り直される。
  */
@@ -84,5 +90,85 @@ class GlassSession(val client: GlassClient) {
             delay(PAGE_SETTLE_MS)
             commands.sendImage(width, height, grayscale)
         }
+    }
+
+    /** ナビページを開いて案内中にする。案内内容は showNavi / showNaviLargeImage で送る */
+    suspend fun showNaviPage() {
+        sendLock.withLock {
+            Log.d(TAG, "showNaviPage")
+            enterNaviStarted()
+        }
+    }
+
+    /**
+     * ナビ画面の状態だけを切り替える。
+     * 「地図が出ない」ときに、サイズのせいなのか状態が START でないだけなのかを
+     * 切り分けるために UI から直接触れるようにしてある。
+     */
+    suspend fun showNaviStatus(status: CommandManager.NaviStatus) {
+        sendLock.withLock {
+            Log.d(TAG, "showNaviStatus: $status")
+            commands.sendNaviStatus(status)
+        }
+    }
+
+    /**
+     * ナビの案内情報を送る。地図を付けるなら [bitmapWidth] / [bitmapHeight] は 255 まで。
+     * 幅・高さが値1バイトのTLVで載るためで、256 以上は SDK の require で例外になる。
+     */
+    suspend fun showNavi(
+        maneuverIcon: CommandManager.ManeuverIcon,
+        instructionText: String,
+        distanceText: String,
+        estimatedArrivalText: String,
+        timeAndDistanceText: String,
+        bitmapWidth: Int? = null,
+        bitmapHeight: Int? = null,
+        grayscale: ByteArray? = null,
+    ) {
+        sendLock.withLock {
+            Log.d(TAG, "showNavi: $maneuverIcon map=${bitmapWidth}x$bitmapHeight")
+            enterNaviStarted()
+            commands.sendNavi(
+                maneuverIcon = maneuverIcon,
+                instructionText = instructionText,
+                distanceText = distanceText,
+                estimatedArrivalText = estimatedArrivalText,
+                timeAndDistanceText = timeAndDistanceText,
+                bitmapWidth = bitmapWidth,
+                bitmapHeight = bitmapHeight,
+                grayscale = grayscale,
+            )
+        }
+    }
+
+    /**
+     * ナビ画面に全体ルート用の大きい地図を送る。
+     * 幅・高さは 16bit のTLVで載るのでプロトコル上は 65535 まで表現できるが、
+     * 実際に描けるサイズはファーム側のバッファ次第で SDK からは分からない。
+     */
+    suspend fun showNaviLargeImage(width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            Log.d(TAG, "showNaviLargeImage: ${width}x$height (${grayscale.size} bytes)")
+            enterNaviStarted()
+            commands.sendNaviLargeImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * ナビページに入り直して案内中にする。呼び出し側は sendLock を取っていること。
+     *
+     * 送信のたびに入り直すのは showText / showImage と同じ理由（ページはキャッシュしない）に
+     * 加えて、サイズ上限を探る用途では必須。入り直さないと、大きすぎてファームに弾かれた
+     * ときに前回の地図がそのまま残り、「表示された」と誤読してしまう。
+     */
+    private suspend fun enterNaviStarted() {
+        commands.enterNavigationPage()
+        delay(PAGE_SETTLE_MS)
+        commands.sendNaviLanguage(NAVI_LANGUAGE)
+        delay(STATUS_SETTLE_MS)
+        // sendNavi の内容は START のときだけ描画される。READY のままだと何も出ない
+        commands.sendNaviStatus(CommandManager.NaviStatus.START)
+        delay(STATUS_SETTLE_MS)
     }
 }
