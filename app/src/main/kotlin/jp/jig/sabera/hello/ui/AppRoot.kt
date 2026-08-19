@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -18,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.jigglass.glass.GestureType
 import app.jigglass.glass.GlassManager
@@ -78,10 +79,10 @@ private fun ConnectedScreen(
         topBar = { TopAppBar(title = { Text("接続中: ${session.deviceName}") }) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            // タブは4つ。固定幅の TabRow に収めるためラベルは短くしてある。
-            // ScrollableTabRow にすると初期表示で右端のタブが画面外に出て
-            // 存在に気づかれないので、増やすときもまずラベルを削ること
-            TabRow(selectedTabIndex = tab) {
+            // タブが増えて固定幅の TabRow では収まらなくなったので Scrollable にした。
+            // 右端のタブが初期表示で画面外に出るため、ラベルは引き続き短く保つこと。
+            // タブを足すときは番号を重複させないよう注意（過去に main が壊れた）。
+            ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
