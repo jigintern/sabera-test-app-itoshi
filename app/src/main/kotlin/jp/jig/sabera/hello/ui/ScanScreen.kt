@@ -56,7 +56,7 @@ fun ScanScreen(manager: GlassManager) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("SABERA Hello", style = MaterialTheme.typography.headlineMedium)
+        Text("SABERA Test", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
         Text(
             text = "SABERA グラスの電源を入れて、下のボタンから接続してください。",
