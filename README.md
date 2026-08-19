@@ -141,6 +141,8 @@ IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateO
 つまり `sendImage` の 196x196 は**画面の横幅の3分の1程度しか占めない**。
 画像が小さく見えるのは仕様であって、送り方の問題ではない。
 
+**SDK 0.2.1 以降は `sendCanvasImage` でもっと大きい画像を置ける。** 下記参照。
+
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
 `sendImage` のパケットは width / height / データの3つだけで、**拡大率も表示位置も持たない**
 （`PacketCommandUtils.ImageDisplayKey`）。つまりグラス上で大きく見せる手段は
@@ -154,6 +156,40 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 ディザリングは既定でオフ。転送は量子化後の RLE 圧縮なので、ディザをかけると run が消えて
 圧縮が効かなくなり、送信が大幅に遅くなる。
+
+### sendCanvasImage なら 196x196 より大きく置ける（SDK 0.4.0）
+
+`sendCanvasImage(x, y, width, height, grayscale)` はキャンバス上の任意座標に画像を置く。
+`sendImage` の 196x196 という上限はこちらには無く、代わりに**バッファ予算**で縛られる。
+
+```kotlin
+// PacketCommandUtils.CanvasKey
+private const val MAX_IMAGE_BUDGET = 380_000
+require(width * height * 2 + encodedBitmap.size <= MAX_IMAGE_BUDGET)
+```
+
+**画面全体（576x360）は置けない。** 画素数 207,360 に対し `w*h*2` だけで 414,720 バイトになり、
+圧縮分を足す前に予算を超える。圧縮率ごとの実用上限:
+
+| 画像の質 | 上限画素数 | 高さ360のときの幅 | sendImage 比 |
+|---|---|---|---|
+| 平坦（RLE 下限 3.1%） | 187,076 | 519 | 4.9倍 |
+| 線画 10% | 180,952 | 502 | 4.7倍 |
+| 写真 25% | 168,888 | 469 | 4.4倍 |
+| ノイズ 87% | 132,404 | 367 | 3.4倍 |
+
+制約が **`w*h*2`（生の画素数の2倍）＋圧縮後サイズ**という形なので、
+圧縮率を上げても上限は 187,076 px 止まりで、それ以上は伸びない。
+
+注意点:
+- **FEATURE_VERSION 2.2.0 以上**が必要（キャンバス本体の 2.1.0 より高い）
+- 置けるのは**1枚だけ**。送るたび前の画像は破棄される
+- 画像は**テキスト要素の背面**に描かれる
+- **ナビの全体ルート画像とバッファを共有**しているため、ナビ表示中は使えない
+- 複数パケットに分かれるので、大きいほど表示まで時間がかかる（アニメーションには不向き）
+- こちらの分割は先頭チャンクが `200 - 8 = 192` バイトで、単一チャンクのときは
+  専用の `SINGLE_PACKET` マーカーを使う。**`sendImage` 側にある「単一チャンクで
+  LAST マーカーが出ない」不具合はこの経路では直っている**
 
 ### グラス側が受信しているかは setProd(false) で見える
 
@@ -170,6 +206,36 @@ logcat に流れてくる**。「送ったのにグラスに出ない」を切�
 未取得だったことも SDK 側がログに出すようになった。
 
 本番では `setProd(true)` に戻すこと。
+
+### ソースにあっても AAR では呼べない API がある
+
+配布される AAR は**難読化されている**。ソースの sources jar には公開されているのに、
+クラスが残っておらずアプリからは呼べないものがある。`javap` で確認した結果:
+
+| 使えないもの | 難読化後 | 影響 |
+|---|---|---|
+| `GlassNormalNotifyCallback` | `j0` | 生の通知パケットを受け取れない。**`requestSettingSync` の応答（FEATURE_VERSION 等）が読めない** |
+| `GlassCommandHook` / `...Handle` | `i0` | **送信の実所要時間 `durationMs` が測れない**。fps の適応制御も実測も不可 |
+| `GlassAudioCallback` | `m` | （0.4.0 で `micAudio: SharedFlow<ByteArray>` が公開されたので解消） |
+| `PacketCommandUtils` 本体 | — | パケットを自前で組み立て・解析できない |
+| `ThreeBitRleCodec` | — | **圧縮後サイズをアプリ側で出せない**（`testdata/` の Python で代替している） |
+| `FeatureVersionComparator` | — | バージョン比較を自前実装するしかない |
+
+確かめ方:
+
+```bash
+AAR=$(ls ~/.gradle/caches/modules-2/files-2.1/jp.jig.sabera.app.sdk/sabera-app-core-android/*/*/sabera-app-core-release.aar | tail -1)
+mkdir -p /tmp/aar && unzip -qo "$AAR" -d /tmp/aar && unzip -qo /tmp/aar/classes.jar -d /tmp/aar/cls
+javap -classpath /tmp/aar/cls app.jigglass.glass.GlassClient
+```
+
+引数の型が `app.jigglass.glass.j0` のように1〜2文字になっていたら、そのメソッドは
+アプリから呼べない。**新しい API を使う前にこれを確認すること。**
+
+**結果として、FEATURE_VERSION は読めない。** ファーム要件（6DoF は 2.0.0、レイアウトは 2.0.0、
+キャンバスは 2.1.0、キャンバス画像は 2.2.0）を満たすかは、
+**その機能を実際に送って反応があるかで間接的に判断するしかない。**
+SDK 側にバージョン検査は無く、古いファームには送るだけで成否も返らない。
 
 ### 送信完了は観測できない
 
@@ -193,22 +259,15 @@ logcat に流れてくる**。「送ったのにグラスに出ない」を切�
 
 ## 今後試せること
 
-SDK 0.2.1 時点で手つかずの機能。次に触る人の入口として。
+SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
 
-| 機能 | API | 追加バージョン | 備考 |
+| 機能 | API | 追加 | 備考 |
 |---|---|---|---|
+| キャンバスへの画像 | `sendCanvasImage(x, y, w, h, grayscale)` | 0.4.0 | **196x196 の上限を超えられる**（上記参照）。**ファーム 2.2.0 以上** |
+| マイクのストリーミング | `startMicStreaming` / `micAudio: SharedFlow<ByteArray>` | 0.4.0 | Opus のデコードは SDK 側。**Android はそのまま PCM が取れる** |
 | 分割レイアウト | `sendLayout` / `sendLayoutTexts` / `closeLayout` | 0.2.0 | 全画面・上下・左右・4分割。**ファーム 2.0.0 以上** |
-| 自由配置キャンバス | `sendCanvas` / `sendCanvasElements` / `clearCanvas` | 0.2.0 | 矩形＋テキストを8個まで任意座標に。**ファーム 2.1.0 以上** |
-| マイク | `openGlassMic` / `closeGlassMic` | — | |
-| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る Flow が非公開 |
+| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（下記） |
 | AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
-
-**レイアウトとキャンバスはこのグラスのファームでは動かない見込み。** 6DoF が
-FEATURE_VERSION 2.0.0 未満で動かないことが確認できているため、同じ要件のこれらも
-同様と考えられる。ファーム更新後に試す。
-
-どちらもテキスト専用で、画像は置けない。テキストの合計は**190バイト程度**まで
-（分割送信できないため）。
 
 ### ナビの画像サイズ上限（調査中）
 
