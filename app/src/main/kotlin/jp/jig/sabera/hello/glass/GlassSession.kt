@@ -94,6 +94,53 @@ class GlassSession(val client: GlassClient) {
         }
     }
 
+    /**
+     * 端末側で求めた絶対方位をグラスへ送る。
+     *
+     * sendLock は取らない。単一パケットで、ナビの状態にも画面遷移にも影響しないと
+     * KDoc にある。順序が意味を持つ列ではないので直列化する理由が無い。
+     * それどころか lock を取ると「ページに入る→状態→本文」の 330ms の列が終わるまで
+     * 方位が止まり、送信間隔を変えて挙動を見るというテストの前提そのものが崩れる。
+     *
+     * 引数は 0以上360未満でないと SDK の require で落ちるので、ここで畳んでおく。
+     */
+    fun sendCourse(courseDegrees: Double) {
+        val normalized = courseDegrees.mod(360.0)
+        Log.d(TAG, "sendNaviCourse: $normalized")
+        commands.sendNaviCourse(normalized)
+    }
+
+    /**
+     * キャンバスを全消しして置き直す。
+     *
+     * これも sendLock は取らない。sendCanvas は全消しの CONTROL ごと 1 パケットに載り、
+     * それ自体が原子的なので順序を作る必要がない。
+     *
+     * suspend にしていないのは実態に合わせるため。SDK 側は launch して即 return する
+     * fire-and-forget で、キューは上限なしの ArrayDeque。drop も詰まり検知も無いので、
+     * リンクの速度を超えて呼び続けるとキューが伸びて表示が遅れていくだけでエラーも出ない。
+     * suspend にすると「待てば送り終わる」ように見えてしまい、その嘘のほうが害になる。
+     * 呼び出し側が必ず自前で間隔を作ること。
+     */
+    fun showCanvas(elements: List<CommandManager.CanvasElement>) {
+        commands.sendCanvas(elements)
+    }
+
+    /** キャンバスを閉じる。開いたままだと他タブの表示に被さる */
+    fun closeCanvas() {
+        Log.d(TAG, "closeCanvas")
+        commands.closeCanvas()
+    }
+
+    /**
+     * 積み上がったパケットを捨てる。
+     * バックプレッシャーが無い以上、送りすぎたときの脱出口はこれしかない。
+     */
+    suspend fun cancelPendingPackets() {
+        Log.d(TAG, "cancelPendingPackets")
+        client.cancelPendingPackets()
+    }
+
     /** グラスにテキストを表示する */
     suspend fun showText(text: String) {
         subscribed.await() // lock の外で待つ。ここで待ってもデッドロックしない
