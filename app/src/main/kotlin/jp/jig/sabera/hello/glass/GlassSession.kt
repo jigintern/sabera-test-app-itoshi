@@ -121,9 +121,24 @@ class GlassSession(val client: GlassClient) {
      * リンクの速度を超えて呼び続けるとキューが伸びて表示が遅れていくだけでエラーも出ない。
      * suspend にすると「待てば送り終わる」ように見えてしまい、その嘘のほうが害になる。
      * 呼び出し側が必ず自前で間隔を作ること。
+     *
+     * 注意: lock を取らないので、画像のような複数パケットの転送が流れている最中に
+     * 呼ぶとチャンクの間に割り込み、グラス側の再組立を壊す。画像を送るあいだは
+     * キャンバスの送出を止めること。
      */
     fun showCanvas(elements: List<CommandManager.CanvasElement>) {
         commands.sendCanvas(elements)
+    }
+
+    /** 既存の要素を残したまま、指定した id だけ差し替える。これも単一パケット */
+    fun sendCanvasElements(elements: List<CommandManager.CanvasElement>) {
+        commands.sendCanvasElements(elements)
+    }
+
+    /** キャンバスの中身だけ消す。キャンバス自体は開いたまま */
+    fun clearCanvas() {
+        Log.d(TAG, "clearCanvas")
+        commands.clearCanvas()
     }
 
     /** キャンバスを閉じる。開いたままだと他タブの表示に被さる */
@@ -168,6 +183,43 @@ class GlassSession(val client: GlassClient) {
         }
     }
 
+    /**
+     * 画像ページに入る。連続送信の前に1回だけ呼ぶ。
+     *
+     * [showImage] は毎回ページに入り直して 250ms 待つ。1枚出すだけならそれでいいが、
+     * パラパラ漫画の fps を測るときはその 250ms が測定値の大半になってしまい、
+     * 「1枚あたり何ミリ秒か」が分からなくなる。入るのと送るのを分けてある。
+     */
+    suspend fun enterImagePage() {
+        sendLock.withLock {
+            Log.d(TAG, "enterImagePage")
+            commands.enterImageDisplayPage()
+            delay(PAGE_SETTLE_MS)
+        }
+    }
+
+    /**
+     * 画像を1枚送る。ページ遷移はしないので、事前に [enterImagePage] を呼んでおくこと。
+     *
+     * sendLock を取るのは順序のためではなく、混線を防ぐため。SDK の sendImage には
+     * 前の転送を待つ仕組みが無く、待たずに2回呼ぶと画像Aの中間チャンクと画像Bの
+     * 先頭チャンクがキューで交互に並び、ファーム側の再組立が破綻する。
+     *
+     * ただしこの lock で守れるのは「キューに積む順番」だけである。積み終わった時点で
+     * 戻ってくるので、戻り値が返っても転送は終わっていない。
+     */
+    suspend fun sendImageFrame(width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            commands.sendImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * キャンバスを1フレーム分まとめて送る。全消しと全描画がこの1パケットに入る。
+     *
+     * キャンバスにはページ遷移コマンドが無い（enterCanvasPage は SDK に存在しない）。
+     * sendCanvas が CONTROL_CLEAR を同梱していて、これ自体が画面を作り直す。
+     */
     /** ナビページを開いて案内中にする。案内内容は showNavi / showNaviLargeImage で送る */
     suspend fun showNaviPage() {
         sendLock.withLock {

@@ -22,3 +22,7 @@ key.properties
 
 # テスト画像は make_navi_images.py で生成する（seed 固定で再現可能）
 testdata/navi/*.png
+
+# パラパラ漫画のコマは make_flipbook_frames.py で生成する。
+# 題材もコマ数も引数で変わるうえ数百枚になるので、成果物は追跡しない
+testdata/flipbook/*.png

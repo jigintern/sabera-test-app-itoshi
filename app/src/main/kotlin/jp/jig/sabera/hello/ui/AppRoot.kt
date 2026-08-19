@@ -82,12 +82,16 @@ private fun ConnectedScreen(
             // タブが増えて固定幅の TabRow では収まらなくなったので Scrollable にした。
             // 右端のタブが初期表示で画面外に出るため、ラベルは引き続き短く保つこと。
             // タブを足すときは番号を重複させないよう注意（過去に main が壊れた）。
+            // タブ番号と子の位置が 0..5 で一致しているので selectedTabIndex に
+            // そのまま渡せる。欠番を作ると既定のインジケータがずれるので、
+            // タブを足すときは番号を連続させること
             ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
                 Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("ナビ") })
                 Tab(selected = tab == 4, onClick = { tab = 4 }, text = { Text("北") })
+                Tab(selected = tab == 5, onClick = { tab = 5 }, text = { Text("パラパラ") })
             }
             when (tab) {
                 0 -> HelloWorldScreen(
@@ -100,10 +104,10 @@ private fun ConnectedScreen(
                 1 -> PhotoScreen(session = session, gestures = gestures)
                 // 6DoF の受信はこの画面が構成から外れた時点で止まる（ImuScreen 側の効果）
                 2 -> ImuScreen(session = session, gestures = gestures)
-                // 番号順に並んでいないのは else 節を触らないため。
-                // 過去にここが複数ブランチで衝突して main が壊れている（a1ae915）
+                3 -> NaviScreen(session = session, gestures = gestures)
                 4 -> NorthArrowScreen(session = session, gestures = gestures)
-                else -> NaviScreen(session = session, gestures = gestures)
+                // 再生は FlipbookScreen 側で構成から外れた時点で止まる
+                else -> FlipbookScreen(session = session, gestures = gestures)
             }
         }
     }
