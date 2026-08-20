@@ -381,6 +381,61 @@ class GlassSession(val client: GlassClient) {
     }
 
     /**
+     * ナビ画面を開いて案内中にする。連続送信の前に1回だけ呼ぶ。
+     *
+     * [showNaviLargeImage] は毎回 [enterNaviStarted] を通すため、呼ぶたびに
+     * `PAGE_SETTLE_MS + STATUS_SETTLE_MS×2` = 410ms の前置きが付く。1枚だけ
+     * 出すならそれでいいが、パラパラ漫画の fps を測るときはその410msだけで
+     * レートが決まってしまい、経路どうしの比較にならない。[enterImagePage] /
+     * [sendImageFrame] と同じ形で、入るのと送るのを分けてある。
+     */
+    suspend fun enterNaviPageForImages() {
+        sendLock.withLock {
+            Log.d(TAG, "enterNaviPageForImages")
+            enterNaviStarted()
+        }
+    }
+
+    /**
+     * ナビの全体ルート画像を1枚送る。ページ遷移も状態遷移もしないので、事前に
+     * [enterNaviPageForImages] を呼んでおくこと。
+     *
+     * [sendImageFrame] と同じく**この lock は混線を防がない**。連続で送るなら
+     * 1枚ぶんの推定転送時間を、呼び出し側が自分で空けること。
+     */
+    suspend fun sendNaviLargeImageFrame(width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            commands.sendNaviLargeImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * 分割レイアウトを開いて、分割と初期テキストを送る。
+     *
+     * このアプリでは今まで使っていなかった経路。[showCanvas] と同じ理由で
+     * lock は取らない: 1回の `sendCommand` で完結する単一パケットで、
+     * 順序を作る必要が無いため。テキストは領域内で折り返し、あふれた分は
+     * 切られる。分割送信が無いので、送る前に必ず
+     * [jp.jig.sabera.hello.transport.LayoutBudget.check] で検算すること。
+     */
+    fun showLayout(mode: CommandManager.LayoutMode, texts: Map<Int, String> = emptyMap()) {
+        Log.d(TAG, "showLayout: $mode texts=${texts.keys}")
+        commands.sendLayout(mode, texts)
+    }
+
+    /** 分割を保ったまま、指定した領域のテキストだけ差し替える。これも単一パケット */
+    fun sendLayoutTexts(texts: Map<Int, String>) {
+        Log.d(TAG, "sendLayoutTexts: ${texts.keys}")
+        commands.sendLayoutTexts(texts)
+    }
+
+    /** 分割レイアウトを閉じる。開いたままだと他タブの表示に被さる */
+    fun closeLayout() {
+        Log.d(TAG, "closeLayout")
+        commands.closeLayout()
+    }
+
+    /**
      * ナビページに入り直して案内中にする。呼び出し側は sendLock を取っていること。
      *
      * 送信のたびに入り直すのは showText / showImage と同じ理由（ページはキャッシュしない）に
