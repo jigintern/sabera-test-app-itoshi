@@ -37,6 +37,19 @@ private const val STATUS_SETTLE_MS = 80L
 private const val CANVAS_CLEAR_SETTLE_MS = 80L
 
 /**
+ * ROWS 方式で5要素以上を送るときの、sendCanvas と sendCanvasElements の間の待ち。
+ *
+ * この2つはどちらも単発の sendCommand で、複数パケット転送どうしの混線を防ぐために
+ * SDK 0.6.0 で追加された sendCommandsMutex の対象にもならない。個別の launch に乗る
+ * 以上、[PAGE_SETTLE_MS] のコメントと同じ理由で2発の到着順序はSDK側から保証されない。
+ * 後半（sendCanvasElements）が先に着くと、追って届く前半（sendCanvas）の CONTROL_CLEAR が
+ * 後半の内容ごと消してしまう。
+ * 待てば確実というわけではないが、[CANVAS_CLEAR_SETTLE_MS] と同じ経験則の値を
+ * 置いておく（実機で詰めが甘ければ縮める・伸ばすを検討すること）。
+ */
+private const val ROWS_SPLIT_SETTLE_MS = 80L
+
+/**
  * このアプリが置くキャンバス画像の id。
  *
  * SDK 0.6.0 から id ごとに8枚まで置けるようになったが、ここは1枚しか使わないので固定。
