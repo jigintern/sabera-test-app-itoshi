@@ -38,12 +38,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.jigglass.glass.CommandManager.CanvasElement
 import jp.jig.sabera.hello.flipbook.CanvasBudget
 import jp.jig.sabera.hello.flipbook.CellCharset
+import jp.jig.sabera.hello.flipbook.CellMetrics
+import jp.jig.sabera.hello.flipbook.CellMetricsStore
 import jp.jig.sabera.hello.flipbook.FlipbookScene
 import jp.jig.sabera.hello.flipbook.GridLayout
 import jp.jig.sabera.hello.flipbook.GridMode
@@ -64,10 +67,16 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** グリッドの候補。予算に収まらない組み合わせもわざと混ぜてあり、選ぶと理由が出る */
+/**
+ * グリッドの候補。予算に収まらない組み合わせもわざと混ぜてあり、選ぶと理由が出る。
+ *
+ * `34 to 8` は ROWS 方式の2パケット化（sendCanvas 4要素 + sendCanvasElements 4要素）で
+ * 新しく届くようになった値。`11 to 8` は2パケット化前の値で、比較のために残してある
+ * （旧ロジックでは 190-5-96=89B ÷ 8行 = 11桁が上限だった）。
+ */
 private val GRID_PRESETS = listOf(
     8 to 5, 10 to 6, 11 to 8, 12 to 8, 16 to 8,
-    24 to 6, 34 to 4, 14 to 10, 17 to 10, 20 to 10,
+    24 to 6, 34 to 4, 34 to 8, 14 to 10, 17 to 10, 20 to 10,
 )
 
 /** コマ数の候補。1周が短いほど1コマあたりの動きが大きく、粗いグリッドでも追える */
@@ -87,12 +96,6 @@ private const val CANVAS_SAFE_FPS = 24
 
 /** 表示を間引く間隔。送信ループの邪魔をしないための下限 */
 private const val UI_REFRESH_MS = 250L
-
-/** 折り返しの確認に使う目盛り。どこで改行されたかを桁で読めるようにする */
-private val WRAP_RULER = buildString {
-    // N=1 のテキスト予算は 173B。170 文字なら確実に収まる
-    for (i in 0 until 170) append('0' + (i % 10))
-}
 
 /** 1枚ぶんの sendImage 計測結果 */
 private data class ImageMeasure(
@@ -114,17 +117,24 @@ private data class FrameSpec(
     val mode: GridMode,
     val layout: GridLayout,
     val charset: CellCharset,
+    val metrics: CellMetrics,
 )
 
 @Composable
 fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
     val scope = rememberCoroutineScope()
 
+    val context = LocalContext.current
+    val metricsStore = remember { CellMetricsStore(context) }
+    var metrics by remember { mutableStateOf(metricsStore.metrics) }
+
     var scene by remember { mutableStateOf(FlipbookScene.BOUNCING_BALL) }
     var frameCount by remember { mutableStateOf(24) }
     var mode by remember { mutableStateOf(GridMode.WRAP) }
     var charset by remember { mutableStateOf(CellCharset.HASH_SPACE) }
-    var cols by remember { mutableStateOf(17) }
+    // 17 ではなく 16: 改行方式（newlineWorks=true）を使うとき、170+9=179B は
+    // WRAP の予算173Bを超える。160+9=169B なら収まる最大の10行グリッドがこれ
+    var cols by remember { mutableStateOf(16) }
     var rows by remember { mutableStateOf(10) }
 
     // 文字の大きさがプロトコルから分からないので、枠の位置と大きさは実機で合わせるしかない。
@@ -154,7 +164,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    val budget = checkBudget(cols, rows, mode)
+    val budget = checkBudget(cols, rows, mode, metrics, boxWidth.roundToInt(), boxHeight.roundToInt())
     // 行数が id 上限を超えるときは切り詰められる。実際に送る行数で予算を見せる
     val effectiveRows = if (mode == GridMode.ROWS) {
         rows.coerceAtMost(CanvasBudget.MAX_ELEMENTS)
@@ -165,7 +175,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
     val mask = remember(scene, frame, frameCount, cols, rows) {
         renderMask(scene, frame, frameCount, cols, rows)
     }
-    val elements = remember(mask, mode, cols, rows, originX, originY, boxWidth, boxHeight, charset) {
+    val elements = remember(mask, mode, cols, rows, originX, originY, boxWidth, boxHeight, charset, metrics) {
         buildElements(
             mask = mask,
             cols = cols,
@@ -178,6 +188,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 boxHeight.roundToInt(),
             ),
             charset = charset,
+            metrics = metrics,
         )
     }
 
@@ -193,6 +204,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 boxHeight.roundToInt(),
             ),
             charset,
+            metrics,
         ),
     )
     val fpsState by rememberUpdatedState(fps)
@@ -239,9 +251,12 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 mode = s.mode,
                 layout = s.layout,
                 charset = s.charset,
+                metrics = s.metrics,
             )
             try {
-                session.showCanvas(elems)
+                // ROWS は5要素以上で2パケットに分かれる（GlassSession.showCanvasRows 参照）。
+                // WRAP は1要素だけなので分割の意味が無く、そのまま sendCanvas でよい
+                if (s.mode == GridMode.ROWS) session.showCanvasRows(elems) else session.showCanvas(elems)
             } catch (e: CancellationException) {
                 // 停止やタブ移動でこの coroutine が畳まれただけ。握り潰すと
                 // 「送信エラー」として出てしまい、本物の失敗と区別がつかなくなる
@@ -332,33 +347,6 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                     }
                 },
             ) { Text("枠の確認") }
-            OutlinedButton(
-                onClick = {
-                    error = null
-                    scope.launch {
-                        runCatching {
-                            session.showCanvas(
-                                listOf(
-                                    CanvasElement(
-                                        0,
-                                        originX.roundToInt(),
-                                        originY.roundToInt(),
-                                        boxWidth.roundToInt(),
-                                        boxHeight.roundToInt(),
-                                        WRAP_RULER,
-                                    ),
-                                ),
-                            )
-                        }
-                            .onSuccess {
-                                status = "0〜9 の目盛りを ${WRAP_RULER.length} 文字送った。" +
-                                    "1行に何文字入ったかを数えれば、幅 ${boxWidth.roundToInt()}px の" +
-                                    "折り返し桁数が分かる"
-                            }
-                            .onFailure { error = "送信エラー: ${it.message}" }
-                    }
-                },
-            ) { Text("折り返しの確認") }
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -449,7 +437,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             GRID_PRESETS.forEach { (c, r) ->
-                val ok = checkBudget(c, r, mode).fits
+                val ok = checkBudget(c, r, mode, metrics, boxWidth.roundToInt(), boxHeight.roundToInt()).fits
                 FilterChip(
                     selected = cols == c && rows == r,
                     // 予算を超える組み合わせは押させない。SDK の require は
@@ -478,6 +466,17 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (mode == GridMode.ROWS && effectiveRows > 4) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "5行以上は sendCanvas(先頭4行) + sendCanvasElements(残り4行) の2パケットに" +
+                    "分けて送る（GlassSession.showCanvasRows）。この2発は単発パケットなので" +
+                    "到着順序が保証されず、後半が先に着くと前半の CONTROL_CLEAR に消される" +
+                    "恐れがある。それを避ける待ち時間も間に挟むため、fps は単純な半減より" +
+                    "重く落ちる。送信の合間だけ前半・後半のコマがずれて見える瞬間もあり得る",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         Text("セルの文字", style = MaterialTheme.typography.titleSmall)
@@ -497,7 +496,9 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
         Spacer(Modifier.height(4.dp))
         Text(
             "消灯を空白にすると画面は暗くなるが、折り返しのときに行末の空白が" +
-                "詰められると桁が全部ずれる。崩れたら「.」の組に替えて確かめる",
+                "詰められると桁が全部ずれる。崩れたら「.」の組に替えて確かめる。" +
+                "そもそも等幅かどうかは下の実測パネルの「3. 等幅か」で確認できる。" +
+                "揃わない組が見つかったら、送り幅が等しい文字対をここに足す判断材料になる",
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -521,18 +522,49 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
             max = CanvasBudget.CANVAS_HEIGHT.toFloat(),
         ) { boxHeight = it }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                originX = 8f
-                originY = 8f
-                boxWidth = 560f
-                boxHeight = if (mode == GridMode.ROWS) {
-                    (344f / effectiveRows.coerceAtLeast(1)).coerceAtLeast(8f)
-                } else {
-                    344f
-                }
-            },
-        ) { Text("既定値に戻す") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    originX = 8f
+                    originY = 8f
+                    boxWidth = 560f
+                    boxHeight = if (mode == GridMode.ROWS) {
+                        (344f / effectiveRows.coerceAtLeast(1)).coerceAtLeast(8f)
+                    } else {
+                        344f
+                    }
+                },
+            ) { Text("既定値に戻す") }
+            OutlinedButton(
+                // 方式Bの本体。cols × 実測の送り幅ぶんの枠にすれば、狙った桁で
+                // ファームに折り返させられる（改行が効くかどうかに依存しない）
+                onClick = { boxWidth = metrics.boxWidthFor(cols).toFloat() },
+            ) { Text("cols に合わせる") }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "「cols に合わせる」は枠幅 = cols × 実測の送り幅(${metrics.advancePx}px) にする。" +
+                "改行(方式A)が効かない前提でも、桁数を狙って折り返させられる(方式B)",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(12.dp))
+
+        /* ---- 実測パネル ---- */
+        CanvasMetricsPanel(
+            session = session,
+            layout = GridLayout(
+                originX.roundToInt(),
+                originY.roundToInt(),
+                boxWidth.roundToInt(),
+                boxHeight.roundToInt(),
+            ),
+            store = metricsStore,
+            metrics = metrics,
+            onMetricsChange = { metrics = it },
+        )
 
         Spacer(Modifier.height(16.dp))
 
@@ -542,7 +574,7 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
             style = MaterialTheme.typography.titleSmall,
         )
         Spacer(Modifier.height(4.dp))
-        GridPreview(elements.map { it.text }, mode, cols)
+        GridPreview(elements.map { it.text }, mode, cols, metrics, boxWidth.roundToInt())
         Spacer(Modifier.height(4.dp))
         Text(
             "実 payload ${CanvasBudget.payloadBytes(elements)}B / ${CanvasBudget.PAYLOAD_MAX}B、" +
@@ -599,7 +631,9 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                     val next = (frame + 1) % frameCount
                     frame = next
                     scope.launch {
-                        runCatching { session.showCanvas(elements) }
+                        runCatching {
+                            if (mode == GridMode.ROWS) session.showCanvasRows(elements) else session.showCanvas(elements)
+                        }
                             .onFailure { error = "送信エラー: ${it.message}" }
                     }
                 },
@@ -609,7 +643,9 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
                 onClick = {
                     error = null
                     scope.launch {
-                        runCatching { session.showCanvas(elements) }
+                        runCatching {
+                            if (mode == GridMode.ROWS) session.showCanvasRows(elements) else session.showCanvas(elements)
+                        }
                             .onFailure { error = "送信エラー: ${it.message}" }
                     }
                 },
@@ -874,9 +910,14 @@ private fun BudgetPanel(
  *
  * グラスと同じ黒地・等幅で見せる。整形して見やすくすると、実機で崩れたときに
  * 「送った内容が違う」のか「折り返しが違う」のか切り分けられなくなる。
+ *
+ * [metrics.newlineWorks] が true なら送った `\n` どおりに、false なら実測の
+ * [CellMetrics.maxCols] で折り返す。以前は常に `cols` 文字で折り返した「期待どおりに
+ * 折れた場合」を描いていたが、それだと端末のプレビューだけ正しく見えて実機の崩れ方と
+ * 食い違う。ここを実測値にすることで、崩れる様子をこの画面上でも再現できる。
  */
 @Composable
-private fun GridPreview(texts: List<String>, mode: GridMode, cols: Int) {
+private fun GridPreview(texts: List<String>, mode: GridMode, cols: Int, metrics: CellMetrics, boxWidth: Int) {
     Surface(color = Color.Black, contentColor = Color.White) {
         // 34 桁のグリッドは狭い端末だと入りきらない。折り返すと実機の見え方と
         // 混同するので、折り返さず横スクロールさせる
@@ -886,12 +927,14 @@ private fun GridPreview(texts: List<String>, mode: GridMode, cols: Int) {
                 .horizontalScroll(rememberScrollState())
                 .padding(8.dp),
         ) {
-            val lines = if (mode == GridMode.WRAP) {
-                // 折り返しがどう起きるかは実機次第。ここでは「期待どおり cols 文字で
-                // 折り返した場合」を出す。実機がこう見えなければ折り返しの仕様が違う
-                texts.firstOrNull().orEmpty().chunked(cols)
-            } else {
-                texts
+            val lines = when {
+                mode == GridMode.WRAP && metrics.newlineWorks ->
+                    texts.firstOrNull().orEmpty().split("\n")
+
+                mode == GridMode.WRAP ->
+                    texts.firstOrNull().orEmpty().chunked(metrics.maxCols(boxWidth))
+
+                else -> texts
             }
             lines.forEach { line ->
                 Text(

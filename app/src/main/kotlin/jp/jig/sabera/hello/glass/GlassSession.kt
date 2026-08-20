@@ -37,6 +37,19 @@ private const val STATUS_SETTLE_MS = 80L
 private const val CANVAS_CLEAR_SETTLE_MS = 80L
 
 /**
+ * ROWS 方式で5要素以上を送るときの、sendCanvas と sendCanvasElements の間の待ち。
+ *
+ * この2つはどちらも単発の sendCommand で、複数パケット転送どうしの混線を防ぐために
+ * SDK 0.6.0 で追加された sendCommandsMutex（このアプリは 0.4.0 のまま据え置き）の
+ * 対象にもならない。個別の launch に乗る以上、[PAGE_SETTLE_MS] のコメントと同じ理由で
+ * 2発の到着順序はSDK側から保証されない。後半（sendCanvasElements）が先に着くと、
+ * 追って届く前半（sendCanvas）の CONTROL_CLEAR が後半の内容ごと消してしまう。
+ * 待てば確実というわけではないが、[CANVAS_CLEAR_SETTLE_MS] と同じ経験則の値を
+ * 置いておく（実機で詰めが甘ければ縮める・伸ばすを検討すること）。
+ */
+private const val ROWS_SPLIT_SETTLE_MS = 80L
+
+/**
  * ナビ画面の表示言語。到着時刻ラベル等の表示切り替えに使われるだけで、画面遷移は起こさない。
  * 送らないとファーム側の既定のままになるので、ページに入るたびに送っておく。
  */
@@ -138,6 +151,35 @@ class GlassSession(val client: GlassClient) {
      */
     fun showCanvas(elements: List<CommandManager.CanvasElement>) {
         commands.sendCanvas(elements)
+    }
+
+    /**
+     * [GridMode.ROWS]（1行1要素）方式で5要素以上を送るときの2パケット構成。
+     *
+     * sendCanvas 単体だと CONTROL_CLEAR の5バイトを含めて8要素ぶんの固定費(96B)が
+     * 先に消え、1行あたり11桁が限界になる（190-5-96=89B ÷ 8行）。先頭4要素だけを
+     * sendCanvas（CONTROL_CLEAR 込み、予算137B）で送って古い要素を全消しし、
+     * 残りを sendCanvasElements（CONTROL無し、予算142B）で足すと、1行あたりの
+     * 予算がどちらの束でも34桁まで伸びる。
+     *
+     * 毎フレーム 0..7 の id を全部書き直すので前フレームの行が残ることはない。
+     * ただし [ROWS_SPLIT_SETTLE_MS] のコメントのとおり2発の到着順序は保証されないため、
+     * ここで待ちを挟む。fps は「2パケットぶん」どころか「2パケット + 待ち」で単純な
+     * 半減より重く落ちる。送信の合間だけ前半4行が新しいコマ・後半4行が前のコマのままと
+     * いう瞬間が実機では見える可能性がある点も変わらない。
+     * 要素が4個以下ならこの分割に意味が無いので、単発の sendCanvas と同じく
+     * ロックも待ちも取らずに1回で済ませる。
+     */
+    suspend fun showCanvasRows(elements: List<CommandManager.CanvasElement>) {
+        if (elements.size <= 4) {
+            commands.sendCanvas(elements)
+            return
+        }
+        sendLock.withLock {
+            commands.sendCanvas(elements.take(4))
+            delay(ROWS_SPLIT_SETTLE_MS)
+            commands.sendCanvasElements(elements.drop(4))
+        }
     }
 
     /** 既存の要素を残したまま、指定した id だけ差し替える。これも単一パケット */
