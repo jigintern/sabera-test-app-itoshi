@@ -82,7 +82,7 @@ private fun ConnectedScreen(
             // タブが増えて固定幅の TabRow では収まらなくなったので Scrollable にした。
             // 右端のタブが初期表示で画面外に出るため、ラベルは引き続き短く保つこと。
             // タブを足すときは番号を重複させないよう注意（過去に main が壊れた）。
-            // タブ番号と子の位置が 0..5 で一致しているので selectedTabIndex に
+            // タブ番号と子の位置が 0..6 で一致しているので selectedTabIndex に
             // そのまま渡せる。欠番を作ると既定のインジケータがずれるので、
             // タブを足すときは番号を連続させること
             ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
@@ -92,6 +92,7 @@ private fun ConnectedScreen(
                 Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("ナビ") })
                 Tab(selected = tab == 4, onClick = { tab = 4 }, text = { Text("北") })
                 Tab(selected = tab == 5, onClick = { tab = 5 }, text = { Text("パラパラ") })
+                Tab(selected = tab == 6, onClick = { tab = 6 }, text = { Text("3D矢印") })
             }
             when (tab) {
                 0 -> HelloWorldScreen(
@@ -107,7 +108,9 @@ private fun ConnectedScreen(
                 3 -> NaviScreen(session = session, gestures = gestures)
                 4 -> NorthArrowScreen(session = session, gestures = gestures)
                 // 再生は FlipbookScreen 側で構成から外れた時点で止まる
-                else -> FlipbookScreen(session = session, gestures = gestures)
+                5 -> FlipbookScreen(session = session, gestures = gestures)
+                // 送信ループの停止・キャンバス/レイアウトの後始末は Arrow3dScreen 側の効果で行う
+                else -> Arrow3dScreen(session = session, gestures = gestures)
             }
         }
     }
