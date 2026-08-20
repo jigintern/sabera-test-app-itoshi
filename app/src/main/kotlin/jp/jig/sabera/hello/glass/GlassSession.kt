@@ -148,6 +148,35 @@ class GlassSession(val client: GlassClient) {
         commands.sendCanvas(elements)
     }
 
+    /**
+     * [GridMode.ROWS]（1行1要素）方式で5要素以上を送るときの2パケット構成。
+     *
+     * sendCanvas 単体だと CONTROL_CLEAR の5バイトを含めて8要素ぶんの固定費(96B)が
+     * 先に消え、1行あたり11桁が限界になる（190-5-96=89B ÷ 8行）。先頭4要素だけを
+     * sendCanvas（CONTROL_CLEAR 込み、予算137B）で送って古い要素を全消しし、
+     * 残りを sendCanvasElements（CONTROL無し、予算142B）で足すと、1行あたりの
+     * 予算がどちらの束でも34桁まで伸びる。
+     *
+     * 毎フレーム 0..7 の id を全部書き直すので前フレームの行が残ることはない。
+     * ただし [ROWS_SPLIT_SETTLE_MS] のコメントのとおり2発の到着順序は保証されないため、
+     * ここで待ちを挟む。fps は「2パケットぶん」どころか「2パケット + 待ち」で単純な
+     * 半減より重く落ちる。送信の合間だけ前半4行が新しいコマ・後半4行が前のコマのままと
+     * いう瞬間が実機では見える可能性がある点も変わらない。
+     * 要素が4個以下ならこの分割に意味が無いので、単発の sendCanvas と同じく
+     * ロックも待ちも取らずに1回で済ませる。
+     */
+    suspend fun showCanvasRows(elements: List<CommandManager.CanvasElement>) {
+        if (elements.size <= 4) {
+            commands.sendCanvas(elements)
+            return
+        }
+        sendLock.withLock {
+            commands.sendCanvas(elements.take(4))
+            delay(ROWS_SPLIT_SETTLE_MS)
+            commands.sendCanvasElements(elements.drop(4))
+        }
+    }
+
     /** 既存の要素を残したまま、指定した id だけ差し替える。これも単一パケット */
     fun sendCanvasElements(elements: List<CommandManager.CanvasElement>) {
         commands.sendCanvasElements(elements)
@@ -369,6 +398,61 @@ class GlassSession(val client: GlassClient) {
             enterNaviStarted()
             commands.sendNaviLargeImage(width, height, grayscale)
         }
+    }
+
+    /**
+     * ナビ画面を開いて案内中にする。連続送信の前に1回だけ呼ぶ。
+     *
+     * [showNaviLargeImage] は毎回 [enterNaviStarted] を通すため、呼ぶたびに
+     * `PAGE_SETTLE_MS + STATUS_SETTLE_MS×2` = 410ms の前置きが付く。1枚だけ
+     * 出すならそれでいいが、パラパラ漫画の fps を測るときはその410msだけで
+     * レートが決まってしまい、経路どうしの比較にならない。[enterImagePage] /
+     * [sendImageFrame] と同じ形で、入るのと送るのを分けてある。
+     */
+    suspend fun enterNaviPageForImages() {
+        sendLock.withLock {
+            Log.d(TAG, "enterNaviPageForImages")
+            enterNaviStarted()
+        }
+    }
+
+    /**
+     * ナビの全体ルート画像を1枚送る。ページ遷移も状態遷移もしないので、事前に
+     * [enterNaviPageForImages] を呼んでおくこと。
+     *
+     * [sendImageFrame] と同じく**この lock は混線を防がない**。連続で送るなら
+     * 1枚ぶんの推定転送時間を、呼び出し側が自分で空けること。
+     */
+    suspend fun sendNaviLargeImageFrame(width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            commands.sendNaviLargeImage(width, height, grayscale)
+        }
+    }
+
+    /**
+     * 分割レイアウトを開いて、分割と初期テキストを送る。
+     *
+     * このアプリでは今まで使っていなかった経路。[showCanvas] と同じ理由で
+     * lock は取らない: 1回の `sendCommand` で完結する単一パケットで、
+     * 順序を作る必要が無いため。テキストは領域内で折り返し、あふれた分は
+     * 切られる。分割送信が無いので、送る前に必ず
+     * [jp.jig.sabera.hello.transport.LayoutBudget.check] で検算すること。
+     */
+    fun showLayout(mode: CommandManager.LayoutMode, texts: Map<Int, String> = emptyMap()) {
+        Log.d(TAG, "showLayout: $mode texts=${texts.keys}")
+        commands.sendLayout(mode, texts)
+    }
+
+    /** 分割を保ったまま、指定した領域のテキストだけ差し替える。これも単一パケット */
+    fun sendLayoutTexts(texts: Map<Int, String>) {
+        Log.d(TAG, "sendLayoutTexts: ${texts.keys}")
+        commands.sendLayoutTexts(texts)
+    }
+
+    /** 分割レイアウトを閉じる。開いたままだと他タブの表示に被さる */
+    fun closeLayout() {
+        Log.d(TAG, "closeLayout")
+        commands.closeLayout()
     }
 
     /**

@@ -277,7 +277,8 @@ SDK の `require` は**呼び出しスレッドに同期的に飛ぶ**ので、�
 
 | 経路 | 解像度 | fps | 向くもの |
 |---|---|---|---|
-| `sendCanvas` の文字グリッド | 17x10 程度 | 24〜38 | 動き。絵は文字なので粗い |
+| `sendCanvas` の文字グリッド（WRAP、実測前の推測値） | advancePx=13px, linePitchPx=26px から逆算した桁数（未実測） | 24〜38 | 動き。絵は文字なので粗い |
+| `sendCanvas`/`sendCanvasElements` の文字グリッド（ROWS、5行以上） | 34x8（2パケット構成） | 未実測。単発パケット2発+到着順を守る待ち時間が乗るぶん単純な半減より重く落ちる見込み | 折り返しに依存しない確実な代わり |
 | `sendImage` | 196x196 | 3〜10 | 静止画。位置は左上固定 |
 | `sendCanvasImage` | 544x340 | 0.9〜14 | 大きい静止画。任意座標に置ける |
 
@@ -398,10 +399,12 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 | `image/CanvasImageBudget.kt` | `sendCanvasImage` の予算検算と所要時間の見積り |
 | `ui/ImageRouteScreen.kt` | 画像タブ。3経路の送り比べと送信履歴 |
 | `flipbook/FlipbookScene.kt` | パラパラ漫画の題材。正規化座標で持ち、文字グリッドと画素の両方に同じ絵を出す |
-| `flipbook/CanvasGrid.kt` | 文字グリッドをキャンバス要素に載せる。`12N + T <= 185` の予算検算 |
+| `flipbook/CanvasGrid.kt` | 文字グリッドをキャンバス要素に載せる。バイト予算(`12N + T <= 185`)と画素予算(実測値との整合)の両方を検算する |
+| `flipbook/CellMetrics.kt` | 文字グリッド1セルの実測値（送り幅・行送り・改行の可否）と、その永続化 |
 | `flipbook/FlipbookCost.kt` | 1周ぶんのコマを全部圧縮して最悪コマを数える。予算はここで判断する |
 | `flipbook/PacingStats.kt` | 送出レートの集計器。Compose の state ではない |
 | `ui/CanvasImagePanel.kt` | パラパラタブの `sendCanvasImage` 区画。大きさと fps の取引を測る |
+| `ui/CanvasMetricsPanel.kt` | 実測パネル。改行・折り返し桁数・等幅・行の高さを実機で測るボタン群 |
 | `compass/PhoneHeading.kt` | 端末の回転ベクトルから絶対方位を求める。平置きと立てで軸を切り替える |
 | `ui/AppRoot.kt` | 接続状態の監視とジェスチャー購読の置き場所 |
 | `imu/ImuStats.kt` | 6DoF の集計器。レート・欠損・ヨードリフト・首の動きの検出。Compose の state ではない |
