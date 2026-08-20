@@ -116,6 +116,11 @@ fun ImageRouteScreen(session: GlassSession, gestures: List<String>) {
     var error by remember { mutableStateOf<String?>(null) }
     val log = remember { mutableStateListOf<SendRecord>() }
 
+    // ナビ経路を1回でも押すとグラスは案内中(START)のまま居座る。キャンバス画像は
+    // ナビの全体ルート画像とバッファを共有していて、案内中は**エラーも出さずに
+    // 何も表示されない**。次にどの経路を送るときも、ここが true なら先に抜ける
+    var naviEntered by remember { mutableStateOf(false) }
+
     val maxWidth = shape.maxWidthFor(route)
     val height = shape.heightFor(width)
 
@@ -290,6 +295,12 @@ fun ImageRouteScreen(session: GlassSession, gestures: List<String>) {
                 error = null
                 scope.launch {
                     try {
+                        // ナビを抜けるのが先。抜けずにキャンバス画像を送ると、
+                        // 送信自体は成功したのに何も出ないという読み違いをする
+                        if (naviEntered && route != ImageRoute.NAVI_LARGE) {
+                            session.leaveNavi()
+                            naviEntered = false
+                        }
                         when (route) {
                             ImageRoute.IMAGE_PAGE ->
                                 session.showImage(img.width, img.height, img.pixels)
@@ -297,8 +308,10 @@ fun ImageRouteScreen(session: GlassSession, gestures: List<String>) {
                                 session.showCanvasImage(
                                     originX, originY, img.width, img.height, img.pixels,
                                 )
-                            ImageRoute.NAVI_LARGE ->
+                            ImageRoute.NAVI_LARGE -> {
                                 session.showNaviLargeImage(img.width, img.height, img.pixels)
+                                naviEntered = true
+                            }
                         }
                         val packets = route.packetCount(encoded)
                         log.add(
@@ -338,6 +351,28 @@ fun ImageRouteScreen(session: GlassSession, gestures: List<String>) {
             Text(
                 "ナビは案内中でないと描画されない。グラス側でマップを起動して頭を上げること。" +
                     "この使い勝手の悪さが、同じ大きさが出せるならキャンバスに移りたい理由",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        if (naviEntered) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        runCatching { session.leaveNavi() }
+                        naviEntered = false
+                        status = "ナビを抜けてホームに戻しました"
+                    }
+                },
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("ナビを抜けてホームに戻す") }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "いまグラスは案内中のまま。キャンバス画像はナビの全体ルート画像と" +
+                    "バッファを共有していて、案内中はエラーも出さずに何も表示されない。" +
+                    "他の経路を送るときは自動で抜けるが、手で抜けたいときはこのボタン",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
