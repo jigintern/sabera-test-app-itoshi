@@ -64,8 +64,10 @@ enum class GridMode(val label: String, val note: String) {
     ),
     ROWS(
         label = "1行1要素",
-        note = "1行を1要素にして y で並べる。折り返しに依存しないので確実だが、" +
-            "id が 0..7 しかなく最大8行・テキスト合計 89B に縮む",
+        note = "1行を1要素にして y で並べる。折り返しに依存しないので確実。" +
+            "id が 0..7 しかなく最大8行。5行以上は sendCanvas(先頭4行)+" +
+            "sendCanvasElements(残り4行)の2パケットに分けて送り、1行34桁まで出せる代わりに" +
+            "パケット2発ぶんと到着順を守るための待ち時間が乗り、fpsは単純な半減より重く落ちる",
     ),
 }
 
@@ -106,16 +108,79 @@ data class GridBudget(
 
 /**
  * Cols x Rows がこの方式で送れるかを検算する。テキストは ASCII 前提で 1 セル 1 バイト。
+ *
+ * [metrics] を渡すのは2つの理由から。1つはバイト予算: 改行方式（[CellMetrics.newlineWorks]）
+ * では `\n` が `rows - 1` バイト増えるので、それを数えないと改行を入れた瞬間に SDK の
+ * require が呼び出しスレッドで同期的に落ちる。もう1つは画素側の検算: バイト予算に
+ * 収まっていても、桁数が [CellMetrics.maxCols] を超えていれば枠からはみ出して折り返しが
+ * ずれる。ここを見ていなかったことが今回の不具合の一因で、両方を1箇所で見られるように
+ * してある。
+ *
+ * [GridMode.ROWS] は5要素以上になると [jp.jig.sabera.hello.glass.GlassSession.showCanvasRows]
+ * が2パケット（sendCanvas 4要素 + sendCanvasElements 4要素）に分けて送る。1行あたりの予算は
+ * 「両方の束のうち厳しいほう」で決まるため、`textBudget`/`textBudgetForElements` を両方見て
+ * 小さいほうを取る。4要素以下なら sendCanvas 1回で済むので、この計算は自然と単一パケットの
+ * 場合に帰着する（secondCount == 0）。
  */
-fun checkBudget(cols: Int, rows: Int, mode: GridMode): GridBudget {
-    val count = if (mode == GridMode.WRAP) 1 else rows
-    val textBytes = cols * rows
-    val limit = CanvasBudget.textBudget(count)
-    val payload = 5 + CanvasBudget.ELEMENT_OVERHEAD * count + textBytes
+fun checkBudget(
+    cols: Int,
+    rows: Int,
+    mode: GridMode,
+    metrics: CellMetrics,
+    boxWidth: Int,
+    boxHeight: Int,
+): GridBudget {
     val overCount = mode == GridMode.ROWS && rows > CanvasBudget.MAX_ELEMENTS
+
+    val count: Int
+    val textBytes: Int
+    val limit: Int
+    val perRowLimit: Int
+    when (mode) {
+        GridMode.WRAP -> {
+            count = 1
+            val newlineExtra = if (metrics.newlineWorks) (rows - 1).coerceAtLeast(0) else 0
+            textBytes = cols * rows + newlineExtra
+            limit = CanvasBudget.textBudget(count)
+            perRowLimit = limit
+        }
+
+        GridMode.ROWS -> {
+            val n = rows.coerceAtMost(CanvasBudget.MAX_ELEMENTS)
+            count = n
+            textBytes = cols * n
+            val firstCount = n.coerceAtMost(4)
+            val secondCount = (n - firstCount).coerceAtLeast(0)
+            val firstLimit = CanvasBudget.textBudget(firstCount.coerceAtLeast(1))
+            val perRowFirst = if (firstCount > 0) firstLimit / firstCount else Int.MAX_VALUE
+            val perRowSecond = if (secondCount > 0) {
+                CanvasBudget.textBudgetForElements(secondCount) / secondCount
+            } else {
+                Int.MAX_VALUE
+            }
+            perRowLimit = minOf(perRowFirst, perRowSecond)
+            limit = perRowLimit * n
+        }
+    }
+
+    val payload = 5 + CanvasBudget.ELEMENT_OVERHEAD * count + textBytes
+    val maxCols = metrics.maxCols(boxWidth)
+    val maxRows = metrics.maxRows(boxHeight)
     val reason = when {
         overCount -> "行数が ${rows} で id 上限 ${CanvasBudget.MAX_ELEMENTS} を超える"
-        textBytes > limit -> "テキスト ${textBytes}B が ${count}要素ぶんの予算 ${limit}B を超える"
+        // WRAP は1要素にグリッド全体を積むので、textBytes(cols*rows+改行ぶん) 対 limit の
+        // 総量チェックになる。ROWS は行ごとに独立した予算(先頭4行/残り4行)なので、
+        // 全行共通の cols が perRowLimit を超えるかで見る（cols <= perRowLimit なら
+        // どちらの束も超えないことは perRowLimit の作り方から保証される）
+        mode == GridMode.WRAP && textBytes > limit ->
+            "テキスト ${textBytes}B が予算 ${limit}B を超える"
+        mode == GridMode.ROWS && cols > perRowLimit ->
+            "1行 ${cols}文字が予算 ${perRowLimit}文字を超える（${textBytes}B / ${limit}B）"
+        cols > maxCols -> "桁数 ${cols} が枠幅 ${boxWidth}px・送り幅 ${metrics.advancePx}px で入る上限 " +
+            "${maxCols} を超える。折り返し位置がずれて崩れる"
+        mode == GridMode.WRAP && metrics.newlineWorks && rows > maxRows ->
+            "行数 ${rows} が枠高さ ${boxHeight}px・行送り ${metrics.linePitchPx}px で入る上限 " +
+                "${maxRows} を超える"
         else -> null
     }
     return GridBudget(
@@ -145,6 +210,7 @@ fun buildElements(
     mode: GridMode,
     layout: GridLayout,
     charset: CellCharset,
+    metrics: CellMetrics,
 ): List<CanvasElement> {
     val lines = (0 until rows).map { row ->
         buildString(cols) {
@@ -161,15 +227,21 @@ fun buildElements(
                 layout.y.coerceIn(0, CanvasBudget.CANVAS_HEIGHT - 1),
                 layout.width,
                 layout.height,
-                lines.joinToString(""),
+                // newlineWorks が実測されるまでは既定 false = 現状どおり1バイトも入れず、
+                // 折り返しの挙動に賭ける。true なら明示改行(方式A)、false なら枠合わせ(方式B)で
+                // 崩れを直す前提になる
+                lines.joinToString(if (metrics.newlineWorks) "\n" else ""),
             ),
         )
 
+        // layout.height は要素の矩形の高さ（クリップ域）のまま据え置き、行の間隔だけ
+        // metrics.linePitchPx を使う。この2つを同じ値に縛っていたことが「枠の高さを
+        // 変えると行送りまで変わってしまう」歪みの原因だったので、ここで分離する
         GridMode.ROWS -> lines.take(CanvasBudget.MAX_ELEMENTS).mapIndexed { index, line ->
             CanvasElement(
                 index,
                 layout.x.coerceIn(0, CanvasBudget.CANVAS_WIDTH - 1),
-                (layout.y + index * layout.height).coerceIn(0, CanvasBudget.CANVAS_HEIGHT - 1),
+                (layout.y + index * metrics.linePitchPx).coerceIn(0, CanvasBudget.CANVAS_HEIGHT - 1),
                 layout.width,
                 layout.height,
                 line,
