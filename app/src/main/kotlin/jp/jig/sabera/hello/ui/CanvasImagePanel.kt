@@ -268,14 +268,18 @@ fun CanvasImagePanel(
         Text(
             "ファーム 2.2.0 以上が要る。キャンバス本体は 2.1.0 なので、" +
                 "上の文字グリッドは出るのに画像だけ出ないならファームが 2.1.x。" +
-                "SDK にバージョン検査は無く、古いファームには送っても成否が返らない",
+                "SDK にバージョン検査は無く、古いファームには送っても成否が返らない。" +
+                "SDK 0.5.0 以前はファーム側のフレームと並びが違うので、" +
+                "0.6.0 未満に戻すとやはり何も出ない",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
         )
         Spacer(Modifier.height(4.dp))
         Text(
             "ナビの全体ルート画像とバッファを共有している。ナビタブで地図を出した後は" +
-                "グラスの電源を入れ直すか、ナビを閉じてから試すこと",
+                "グラスの電源を入れ直すか、ナビを閉じてから試すこと。" +
+                "SDK 0.6.0 からは画像を id ごとに8枚まで置けるが、ここは id を固定して" +
+                "同じ1枚を差し替え続ける（予算を1枚ぶんで検算できるようにするため）",
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -418,8 +422,9 @@ fun CanvasImagePanel(
                     if (paceByEstimate) {
                         "推奨。指定 fps と推定のうち遅いほうに合わせる"
                     } else {
-                        "指定 fps を守って投入し続ける。転送が終わる前に次を積むので" +
-                            "チャンクが混線し、絵が壊れるところを見られる"
+                        "指定 fps を守って投入し続ける。SDK 0.6.0 が分割送信を直列化する" +
+                            "ようになったのでチャンクは混ざらないが、キューが伸びて" +
+                            "グラスの表示が投入よりどんどん遅れていくところを見られる"
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )

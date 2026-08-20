@@ -31,23 +31,18 @@ private const val STATUS_SETTLE_MS = 80L
 /**
  * キャンバスを全消ししてから画像を送るまでの待ち。
  *
- * clearCanvas と sendCanvasImage は SDK 内で別々の launch に乗るので、間を空けないと
- * 画像の先頭チャンクが全消しより先に着いて消される。
+ * clearCanvas は単発パケットで、SDK 0.6.0 で入った分割送信の直列化（mutex）の外を通る。
+ * 間を空けないと画像の先頭チャンクが全消しより先に着いて消される。
  */
 private const val CANVAS_CLEAR_SETTLE_MS = 80L
 
 /**
- * ROWS 方式で5要素以上を送るときの、sendCanvas と sendCanvasElements の間の待ち。
+ * このアプリが置くキャンバス画像の id。
  *
- * この2つはどちらも単発の sendCommand で、複数パケット転送どうしの混線を防ぐために
- * SDK 0.6.0 で追加された sendCommandsMutex（このアプリは 0.4.0 のまま据え置き）の
- * 対象にもならない。個別の launch に乗る以上、[PAGE_SETTLE_MS] のコメントと同じ理由で
- * 2発の到着順序はSDK側から保証されない。後半（sendCanvasElements）が先に着くと、
- * 追って届く前半（sendCanvas）の CONTROL_CLEAR が後半の内容ごと消してしまう。
- * 待てば確実というわけではないが、[CANVAS_CLEAR_SETTLE_MS] と同じ経験則の値を
- * 置いておく（実機で詰めが甘ければ縮める・伸ばすを検討すること）。
+ * SDK 0.6.0 から id ごとに8枚まで置けるようになったが、ここは1枚しか使わないので固定。
+ * 同じ id に送れば座標ごと差し替わるので、パラパラ漫画も id を変えずに送り続ける。
  */
-private const val ROWS_SPLIT_SETTLE_MS = 80L
+const val CANVAS_IMAGE_ID = 0
 
 /**
  * ナビ画面の表示言語。到着時刻ラベル等の表示切り替えに使われるだけで、画面遷移は起こさない。
@@ -253,11 +248,14 @@ class GlassSession(val client: GlassClient) {
     /**
      * 画像を1枚送る。ページ遷移はしないので、事前に [enterImagePage] を呼んでおくこと。
      *
-     * **この lock は混線を防がない。** SDK の sendImage は分割したパケット列を
+     * **この lock は待ち合わせではない。** SDK の sendImage は分割したパケット列を
      * `viewModelScope.launch` に投げて即座に返るので、lock を抜けた時点ではまだ
-     * 1バイトも出ていない。待たずに2回呼べば、画像Aの中間チャンクと画像Bの先頭チャンクが
-     * ファームに交互に届いて再組立が壊れる。**混線を防げるのは呼び出し側が転送時間ぶん
-     * 間隔を空けることだけ**で、SDK にも lock にもその手段は無い。
+     * 1バイトも出ていない。
+     *
+     * チャンクの混線そのものは SDK 0.6.0 で直った。分割送信が SDK 内の mutex で
+     * 直列化されるようになり、続けて呼んでも画像Aを送り切ってから画像Bが流れる。
+     * ただし**バックプレッシャーも完了通知も無い**のは変わらないので、リンクの速度を
+     * 超えて呼び続ければキューが伸びて表示が遅れていくだけ。間隔は呼び出し側が作ること。
      *
      * ここで lock を取っているのは、showText や showNavi の「ページに入る→状態→本文」という
      * 250ms 待ちを含む列の**間に割り込まない**ため。守れるのはそこまで。
@@ -275,30 +273,45 @@ class GlassSession(val client: GlassClient) {
      * `w*h*2 + 圧縮後サイズ <= 380000` というグラスの画像バッファで縛られる。
      * この require は**呼び出しスレッドに同期的に飛ぶ**ので、送る前に
      * [jp.jig.sabera.hello.image.CanvasImageBudget.check] で検算しておくこと。
+     * SDK 0.6.0 からは予算を**置いてある画像全部の合計**で見るようになったので、
+     * 複数の id に置くなら合計で検算すること。このアプリは [CANVAS_IMAGE_ID] の
+     * 1枚しか使わないので、検算はこれまで通り1枚ぶんで足りる。
      *
-     * [sendImageFrame] と同じく **lock は混線を防がない**。連続で送るなら
-     * 1枚ぶんの推定転送時間を空けること。
+     * **[id] を渡すのは飾りではない。** SDK 0.6.0 でファーム側のフレームに id が入り、
+     * 0.5.0 までの「id 無し」の並びとは互換が無くなった。古い SDK のまま送ると
+     * ファームが座標をずらして読むので、**エラーも出ずに何も表示されない**。
      *
      * Dispatchers.Default に逃がしているのは、SDK が呼び出しスレッドの上で
      * 3bit RLE の圧縮をしてから launch するため。544x340 は 18万画素あり、
      * Main で回すとスライダーが引っかかる。
      *
      * 注意が2つ:
-     *  - 置けるのは1枚だけで、テキスト要素の**背面**に描かれる。文字グリッドを
-     *    出した後だと画像の上に文字が残るので、先に [clearCanvas] すること
+     *  - 画像はテキスト要素の**背面**に描かれる。文字グリッドを出した後だと
+     *    画像の上に文字が残るので、先に [clearCanvas] すること
      *  - ナビの全体ルート画像とバッファを共有している。ナビ表示中は使えない
+     *
+     * @param id 画像の識別子。0..7 の8枚まで置ける。同じ id に送ると座標ごと差し替わる
      */
-    suspend fun sendCanvasImage(x: Int, y: Int, width: Int, height: Int, grayscale: ByteArray) {
+    suspend fun sendCanvasImage(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        grayscale: ByteArray,
+        id: Int = CANVAS_IMAGE_ID,
+    ) {
         sendLock.withLock {
-            Log.d(TAG, "sendCanvasImage: ($x, $y) ${width}x$height (${grayscale.size} bytes)")
+            Log.d(TAG, "sendCanvasImage: id=$id ($x, $y) ${width}x$height (${grayscale.size} bytes)")
             withContext(Dispatchers.Default) {
-                commands.sendCanvasImage(x, y, width, height, grayscale)
+                commands.sendCanvasImage(id, x, y, width, height, grayscale)
             }
         }
     }
 
     /**
-     * キャンバスに静止画を1枚だけ置く。前に置いてあった要素と画像は消える。
+     * キャンバスに静止画を1枚だけ置く。テキスト要素は全消しで消え、画像は同じ
+     * [CANVAS_IMAGE_ID] に送るので差し替わる（別の id に置いた画像は
+     * `clearCanvas` では消えない見込み。消すなら SDK の `removeCanvasImage`）。
      *
      * [sendCanvasImage] との違いは全消しを挟むところだけ。連続で送るパラパラ漫画では
      * 毎回消すぶんの待ちが測定値に混ざるので分けてある。1枚だけ出すならこちらを使う。
@@ -306,13 +319,20 @@ class GlassSession(val client: GlassClient) {
      * lock は取り直さない（[Mutex] は再入できないのでデッドロックする）。中身を
      * [sendCanvasImage] と重複させているのはそのため。
      */
-    suspend fun showCanvasImage(x: Int, y: Int, width: Int, height: Int, grayscale: ByteArray) {
+    suspend fun showCanvasImage(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        grayscale: ByteArray,
+        id: Int = CANVAS_IMAGE_ID,
+    ) {
         sendLock.withLock {
-            Log.d(TAG, "showCanvasImage: ($x, $y) ${width}x$height (${grayscale.size} bytes)")
+            Log.d(TAG, "showCanvasImage: id=$id ($x, $y) ${width}x$height (${grayscale.size} bytes)")
             commands.clearCanvas()
             delay(CANVAS_CLEAR_SETTLE_MS)
             withContext(Dispatchers.Default) {
-                commands.sendCanvasImage(x, y, width, height, grayscale)
+                commands.sendCanvasImage(id, x, y, width, height, grayscale)
             }
         }
     }
