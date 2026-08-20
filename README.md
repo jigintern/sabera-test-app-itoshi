@@ -9,7 +9,7 @@ SDK の機能をひとつずつ動かして確かめる台として使う。
 
 | 画面 | 内容 | 使っている SDK API |
 |---|---|---|
-| Hello / World | グラスに文字を出す。耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる | `enterEmptyScreenPage` / `sendEmptyScreenStatus` / `sendEmptyScreenContent` / `gestureEvents` |
+| Hello / World | グラスに文字を出す。耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる | `enterTeleprompterPage` / `sendTeleprompterStatus` / `sendTeleprompterContent` / `gestureEvents` |
 | 画像 | 1枚の画像を3つの経路で送り比べる。同じ絵・同じ大きさのまま経路だけ切り替えて、グラス上の見え方の大きさを見る | `sendImage` / `sendCanvasImage` / `sendNaviLargeImage` |
 | 6DoF | サンプルレートと欠損の計測 / ヨードリフト量の計測 / 姿勢のリアルタイム表示 / 首の動きでグラスを操作 | `startImuData` / `stopImuData` / `imuData` / `imuDataStarted` |
 | ナビ | 案内文と地図画像。`sendNavi` と `sendNaviLargeImage` でどこまで大きい地図が通るかを探る | `enterNavigationPage` / `sendNaviStatus` / `sendNavi` / `sendNaviLargeImage` |
@@ -85,10 +85,16 @@ enum class TelepromptStatus {
 }
 ```
 
-なので `sendEmptyScreenStatus(STARTED)` を挟む必要がある。
+なので本文の前に状態を挟む必要がある。
 Getting Started には「ページを開いてからコンテンツを送る」としか書かれておらず状態の話が
 出てこないので、知らないと「ページは出るのに文字が出ない」で延々悩む。
 `glass/TextSurface.kt` がこの順序を持っている。
+
+**使うページは SDK を 0.6.0 に上げたときに変えた。** 見た目は汎用テキスト表示ページ
+（`enterEmptyScreenPage`）のほうが再生・停止アイコンを持たないぶん読みやすかったが、
+その状態を送る `sendEmptyScreenStatus` が 0.5.0 で公開 API から外され、
+本文を送る `sendEmptyScreenContent` だけが残った。**開けるが READY のままで描画されない**
+ページになったので、状態を送れるテレプロンプターページに寄せてある。
 
 ### ページ遷移と内容送信は直列化が必要
 
@@ -148,6 +154,8 @@ IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateO
 あまり変わらなかった。詳しくは下記の「送った画素数と、グラス上の見え方の大きさは別物」。
 
 **SDK 0.4.0 以降は `sendCanvasImage` でもっと大きい画像を置ける。** 下記参照。
+**ただし 0.6.0 でフレームが変わっている。**「送っているのに何も出ない」で悩んだら
+まず SDK のバージョンを疑うこと（下記「画像が出ないときはまず SDK のバージョン」）。
 
 グラス側のバッファは静的で、超えるとファームウェアに弾かれて**何も表示されない**。
 `sendImage` のパケットは width / height / データの3つだけで、**拡大率も表示位置も持たない**
@@ -203,8 +211,10 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 ### sendCanvasImage なら 196x196 より大きく置ける（SDK 0.4.0）
 
-`sendCanvasImage(x, y, width, height, grayscale)` はキャンバス上の任意座標に画像を置く。
+`sendCanvasImage(id, x, y, width, height, grayscale)` はキャンバス上の任意座標に画像を置く。
 `sendImage` の 196x196 という上限はこちらには無く、代わりに**バッファ予算**で縛られる。
+`id` は 0.6.0 で増えた引数（それ以前は無い）。このアプリは1枚しか使わないので
+`glass/GlassSession.kt` の `CANVAS_IMAGE_ID` に固定してある。
 
 ```kotlin
 // PacketCommandUtils.CanvasKey
@@ -227,7 +237,10 @@ require(width * height * 2 + encodedBitmap.size <= MAX_IMAGE_BUDGET)
 
 注意点:
 - **FEATURE_VERSION 2.2.0 以上**が必要（キャンバス本体の 2.1.0 より高い）
-- 置けるのは**1枚だけ**。送るたび前の画像は破棄される
+- **SDK 0.6.0 以上**が必要。0.5.0 以前とはファーム側のフレームが違う（下記）
+- 置けるのは `id` ごとに**8枚まで**（0.6.0 から。それ以前は1枚だけ）。同じ id に送ると
+  座標ごと差し替わる。予算はグラスに**置いてある全部の画像の合計**で見る点に注意で、
+  このアプリが id を固定しているのは、1枚ぶんの検算で済ませるため
 - 画像は**テキスト要素の背面**に描かれる
 - **ナビの全体ルート画像とバッファを共有**しているため、ナビ表示中は使えない
 - 複数パケットに分かれるので、大きいほど表示まで時間がかかる
@@ -268,17 +281,25 @@ SDK の `require` は**呼び出しスレッドに同期的に飛ぶ**ので、�
 | `sendImage` | 196x196 | 3〜10 | 静止画。位置は左上固定 |
 | `sendCanvasImage` | 544x340 | 0.9〜14 | 大きい静止画。任意座標に置ける |
 
-### lock を取っても複数パケットの混線は防げない
+### 分割送信の混線は SDK 0.6.0 で直った。詰まりは直っていない
 
 `sendImage` も `sendCanvasImage` も、内部は
 `sendCommands(...)` → `viewModelScope.launch(Dispatchers.IO)` で**即座に返る**。
 `GlassSession` の `Mutex` を通しても、抜けた時点ではまだ1バイトも出ていない。
 
-つまり転送中に次を呼べば、画像Aの中間チャンクと画像Bの先頭チャンクが
-`PacketQueue` で交互に並び、ファーム側の再組立が壊れる。**これを防ぐ手段は
-「呼び出し側が推定転送時間ぶん間隔を空ける」以外に無い。** SDK にバックプレッシャーも
-完了通知も無いので、送りすぎても詰まったことすら分からない（脱出口は
-`cancelPendingPackets` だけ）。
+0.5.0 までは、転送中に次を呼ぶと画像Aの中間チャンクと画像Bの先頭チャンクが
+`PacketQueue` で交互に並び、ファーム側の再組立が壊れた。**0.6.0 で `sendCommands` が
+SDK 内の mutex で直列化され、続けて呼んでも画像Aを送り切ってから画像Bが流れる。**
+
+**残っているのは詰まりのほう。** バックプレッシャーも完了通知も無いので、リンクの速度を
+超えて呼び続ければキューが伸び、グラスの表示が投入よりどんどん遅れる。送りすぎても
+詰まったことすら分からない（脱出口は `cancelPendingPackets` だけ）。だから
+「推定転送時間ぶん待つ」スイッチは 0.6.0 でも要る。
+
+**直列化されるのは分割送信だけ。** `clearCanvas` / `sendCanvas` / `sendCanvasElements` は
+単発パケットで `sendCommand` を通り、mutex の外を走る。画像の転送中に投げれば
+チャンクの間に割り込むので、画像を送るあいだはキャンバスの送出を止めること。
+全消しの直後に画像を送るときに間を空けているのも同じ理由。
 
 `GlassSession` の lock が実際に守っているのは、`showText` / `showNavi` の
 「ページに入る → 状態 → 本文」という 250ms 待ちを含む列の**間に割り込まない**ことだけ。
@@ -286,6 +307,29 @@ SDK の `require` は**呼び出しスレッドに同期的に飛ぶ**ので、�
 なお `sendCanvasImage` は3bit RLE の圧縮を**呼び出しスレッドの上で**やってから launch する。
 544x340 は18万画素あるので、Main で呼ぶとスライダーが引っかかる。
 `GlassSession` 側で `Dispatchers.Default` に逃がしている。
+
+### 画像が出ないときはまず SDK のバージョン
+
+**`sendCanvasImage` のフレームは 0.6.0 で変わった。** 画像の先頭パケットは
+`マーカー2バイト + 座標8バイト + データ` だったが、0.6.0 で id が1バイト増えて
+`マーカー2バイト + id 1バイト + 座標8バイト + データ` になった
+（[メソッドの追加履歴](https://jig-sabera.github.io/sabera-sdk/api-history.html) の 0.6.0:
+「ファーム側のフレームが変わっているため、0.5.0 までの SDK とは互換がない」）。
+
+つまり**古い SDK のまま送ると、ファームは座標を1バイトずれた位置から読む。**
+`x` の下位バイトを id と読み、以降の座標が全部ずれるので、キャンバスの外を指すか
+とんでもない大きさになって捨てられる。**アプリ側には例外も戻り値も来ない。**
+`Log` には `sendCanvasImage` が出て、`setProd(false)` にすればファームのログにも
+パケットは届いている。それでも**画面には何も出ない**という形で失敗する。
+
+切り分けの順序:
+
+1. **SDK は 0.6.0 以上か**（`app/build.gradle.kts`）。0.5.0 以前ならこれが原因
+2. 文字グリッド（`sendCanvas`）は出るか。出るならファームは 2.1.0 以上
+3. ファームが 2.2.0 未満なら画像だけ出ない。FEATURE_VERSION は
+   [読めない](#ソースにあっても-aar-では呼べない-api-がある)ので、送って反応を見るしかない
+4. ナビタブで地図を出した後ではないか。バッファを共有しているので、ナビを閉じるか
+   電源を入れ直す
 
 ### グラス側が受信しているかは setProd(false) で見える
 
@@ -366,13 +410,14 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 
 ## 今後試せること
 
-SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
+SDK 0.6.0 時点で手つかずの機能。次に触る人の入口として。
 
 | 機能 | API | 追加 | 備考 |
 |---|---|---|---|
 | マイクのストリーミング | `startMicStreaming` / `micAudio: SharedFlow<ByteArray>` | 0.4.0 | Opus のデコードは SDK 側。**Android はそのまま PCM が取れる** |
 | 分割レイアウト | `sendLayout` / `sendLayoutTexts` / `closeLayout` | 0.2.0 | 全画面・上下・左右・4分割。**ファーム 2.0.0 以上** |
 | 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（下記） |
+| キャンバス画像の複数枚置き | `sendCanvasImage(id = ...)` / `removeCanvasImage` | 0.6.0 | id ごとに8枚。予算は**全部の合計**で見る。並べて比べる用途に向く |
 | AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
 
 ### 画像サイズの上限（調査中）
@@ -382,7 +427,7 @@ SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
 | 経路 | サイズ | 結果 |
 |---|---|---|
 | `sendNavi` の地図 | 196x196 | **表示された**（四隅まで欠けなし） |
-| `sendCanvasImage` | 544x340 まで | 出たが、見え方の大きさは `sendImage` とあまり変わらなかった |
+| `sendCanvasImage` | 544x340 まで | 出たが、見え方の大きさは `sendImage` とあまり変わらなかった（SDK 0.4.0 のとき） |
 
 未確認の主な点:
 
@@ -390,7 +435,8 @@ SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
 - `sendNaviLargeImage` はどこまで通るか。キャンバスと同じ 190,000 画素の壁があるはず
 - 経路ごとの拡大倍率。ものさしの基準ブロックを見比べれば分かる
 - キャンバス画像はファーム 2.2.0 以上が必要。文字グリッドは出るのに画像だけ出ないなら
-  ファームが 2.1.x
+  ファームが 2.1.x（SDK が 0.6.0 以上であることを先に確かめること）
+- 0.6.0 で id ごとに8枚置けるようになった。合計予算 380,000B の中で何枚まで並ぶか
 
 画像タブで経路と大きさを切り替えて詰める。ナビのテスト画像は
 [testdata/navi/README.md](testdata/navi/README.md) を参照。
