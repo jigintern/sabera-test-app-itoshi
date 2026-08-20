@@ -3,6 +3,7 @@ package jp.jig.sabera.hello.imu
 import app.jigglass.glass.CommandManager
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.roundToInt
 
 /**
@@ -258,6 +259,130 @@ class YawDriftMeter {
             sampleCount = sampleCount,
         )
     }
+}
+
+/* ---------------- 3D矢印(六軸): 姿勢の基準 ---------------- */
+
+/** [AttitudeBaseline] のスナップショット。UI にはこれだけを渡す */
+data class AttitudeSnapshot(
+    /** IMU サンプルを1件でも受け取っていれば true。基準ボタンの活性化に使う */
+    val hasSample: Boolean,
+    val calibrated: Boolean,
+    /** 基準を取ったときのピッチ[度]（ImuData.pitchDegrees と同じ規約。上向きが負） */
+    val baselinePitchDegrees: Float,
+    /** 基準を取ったときのアンラップ済みヨー[度] */
+    val baselineYawDegrees: Float,
+    val currentPitchDegrees: Float,
+    /** アンラップ済みの現在ヨー[度]。折り返しをまたいでも連続 */
+    val currentYawDegrees: Float,
+    /** 基準からのピッチのズレ[度]。[jp.jig.sabera.hello.arrow3d.ArrowPose.fromAttitude] にそのまま渡せる */
+    val pitchDeltaDegrees: Float,
+    /** 基準からのヨーのズレ[度]。[jp.jig.sabera.hello.arrow3d.ArrowPose.fromAttitude] にそのまま渡せる */
+    val yawDeltaDegrees: Float,
+    /** 基準を確定してから受け取ったサンプル数 */
+    val sampleCount: Int,
+) {
+    companion object {
+        val EMPTY = AttitudeSnapshot(false, false, 0f, 0f, 0f, 0f, 0f, 0f, 0)
+    }
+}
+
+/**
+ * 3D矢印の六軸入力（feature/arrow3d-imu）で使う、ピッチ・ヨーの基準姿勢。
+ *
+ * 「矢印自体が首の姿勢を表す」方式（基準点からのズレを向きに写すのではなく、
+ * 矢印そのものを姿勢どおりに傾ける）を取ると、まず「正面」がどこかを決める
+ * 基準が要る。既存の基準は [YawDriftMeter] の baselineYaw だけで、ヨー専用かつ
+ * ドリフト計測用（度/分を出す用途）でしかない。ピッチの基準はどこにも無いので、
+ * ここでピッチとヨーの基準をまとめて新設する。
+ *
+ * 基準確定のやり方は [YawDriftMeter.accept] と全く同じにしてある。
+ * 「基準を取る」ボタンの `onClick` に渡ってくるのはボタンが押された事実だけで、
+ * そのときの最新 IMU サンプルの値は手元に無い（コールバックにサンプルは
+ * 渡らない）。そのため「ボタンを押した後、次に届いたサンプル」を基準として
+ * 確定させるしかない。[calibrate] は「次のサンプルで確定させる」フラグを立てる
+ * だけで、実際に値を読むのは次の [accept] 呼び出しになる。
+ */
+class AttitudeBaseline {
+
+    private var lastRawYaw = Float.NaN
+    private var unwrappedYaw = 0.0
+    private var currentPitch = 0f
+    private var currentUnwrappedYaw = 0f
+
+    private var calibrated = false
+
+    /** 「基準を取る」が押され、次に届くサンプルで基準を確定させる待ち状態 */
+    private var pendingCalibration = false
+    private var baselinePitch = 0f
+    private var baselineYaw = 0.0
+    private var sampleCount = 0
+
+    /** アンラップは基準を取っていない間も回し続ける。[YawDriftMeter] と同じ理由 */
+    fun accept(pitchDegrees: Float, yawDegrees: Float) {
+        if (lastRawYaw.isNaN()) {
+            unwrappedYaw = yawDegrees.toDouble()
+        } else {
+            unwrappedYaw += unwrappedDelta(lastRawYaw, yawDegrees)
+        }
+        lastRawYaw = yawDegrees
+        currentPitch = pitchDegrees
+        currentUnwrappedYaw = unwrappedYaw.toFloat()
+
+        if (pendingCalibration) {
+            // 基準は「基準を取るボタンを押した後の最初のサンプル」で確定させる。
+            // ボタンを押した時点の値は手元に無いため、YawDriftMeter.accept と
+            // 同じやり方をそのまま踏襲する
+            baselinePitch = pitchDegrees
+            baselineYaw = unwrappedYaw
+            calibrated = true
+            pendingCalibration = false
+            sampleCount = 0
+        }
+        if (calibrated) sampleCount++
+    }
+
+    /** 次に届くサンプルで基準を確定させる（取り直しも同じ経路） */
+    fun calibrate() {
+        pendingCalibration = true
+    }
+
+    fun snapshot(): AttitudeSnapshot = AttitudeSnapshot(
+        hasSample = !lastRawYaw.isNaN(),
+        calibrated = calibrated,
+        baselinePitchDegrees = baselinePitch,
+        baselineYawDegrees = baselineYaw.toFloat(),
+        currentPitchDegrees = currentPitch,
+        currentYawDegrees = currentUnwrappedYaw,
+        pitchDeltaDegrees = if (calibrated) currentPitch - baselinePitch else 0f,
+        yawDeltaDegrees = if (calibrated) (unwrappedYaw - baselineYaw).toFloat() else 0f,
+        sampleCount = sampleCount,
+    )
+}
+
+/**
+ * 加速度の重力ベクトルからロール角を推定する（**推測値**）。
+ *
+ * `ImuData` にロールのフィールドは無い（0.4.0 のソースで確認済み。timestampMs /
+ * accelX/Y/ZMilliG / gyroX/Y/ZDps / pitchDegrees / yawDegrees の9つだけ）。
+ * ロールが要るなら加速度から導くしかないが、このアプリは加速度を数値表示以外に
+ * 使ったことが無い。
+ *
+ * この式は**2つの推測**の上に成り立っている。
+ *  - グラスの取付座標系は X=右, Y=下 と仮定した（加速度センサの軸とグラスの
+ *    前後・上下・左右の対応は SDK のどこにも書かれていない）
+ *  - 静止しているときは加速度ベクトルがほぼ重力方向と一致する、という前提。
+ *    首を振っている間は運動加速度が重力に重なるので、この値は静止時にしか
+ *    当てにならない
+ *
+ * 上記の仮定のもとでは、頭を左右に傾ける動き（ロール）は X-Y 平面内での
+ * 重力ベクトルの回転として現れるので `atan2(accelX, accelY)` で求まる。
+ * 呼び出し側（Arrow3dScreen）は既定オフのスイッチの裏でだけこれを呼び、
+ * 画面にも「推測値であり静止時しか当てにならない」旨を明記すること。
+ */
+fun estimateRollDegrees(accelXMilliG: Int, accelYMilliG: Int): Float {
+    if (accelXMilliG == 0 && accelYMilliG == 0) return 0f
+    return Math.toDegrees(atan2(accelXMilliG.toDouble(), accelYMilliG.toDouble())).toFloat()
 }
 
 /* ---------------- テスト4: 首の動きの検出 ---------------- */

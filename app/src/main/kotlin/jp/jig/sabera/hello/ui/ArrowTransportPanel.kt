@@ -109,6 +109,13 @@ private const val CANVAS_CLEAR_SETTLE_MS = 80L
  * [pose] は毎回のコマ送出時に [rememberUpdatedState] 経由で読む。呼び出し側が
  * `pose` を渡すたびに新しい値になっていれば、再生中でも最新の向きが送られる
  * （ループ自体は作り直されないので [PacingStats] は途切れない）。
+ *
+ * [onActiveTransportChange] は今アクティブな経路（再生していなければ null）が
+ * 変わるたびに呼ばれる。呼び出し側の画面はこれを見て、経路ごとに違う値を
+ * 選びたいもの（例: デッドバンド。文字経路と画像経路では1コマの重さが桁違いに
+ * 違うため、鈍らせる度合いを変えたい）を決められる。`activeTransport` 自体は
+ * 経路の排他を保証するこのパネル内部の唯一の state であり続ける
+ * （呼び出し側にコピーを渡すだけで、判定の主導権はこちらに残す）。
  */
 @Composable
 fun ArrowTransportPanel(
@@ -116,6 +123,7 @@ fun ArrowTransportPanel(
     poseLabel: String,
     pose: ArrowPose,
     modifier: Modifier = Modifier,
+    onActiveTransportChange: (ArrowTransport?) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -183,10 +191,16 @@ fun ArrowTransportPanel(
     )
     val layoutModeState by rememberUpdatedState(layoutMode)
 
+    // onActiveTransportChange はコンポーザブルの呼び出しごとに新しいラムダになりうる。
+    // LaunchedEffect(playing) は playing が変わるまで作り直されないので、
+    // ここも他の設定と同じく rememberUpdatedState 経由で最新のラムダを読む
+    val onActiveTransportChangeState by rememberUpdatedState(onActiveTransportChange)
+
     LaunchedEffect(playing) {
         if (!playing) {
             val old = activeTransport
             activeTransport = null
+            onActiveTransportChangeState(null)
             if (old != null) {
                 runCatching { cleanupTransport(session, old) }
             }
@@ -195,6 +209,7 @@ fun ArrowTransportPanel(
 
         val t = transport
         activeTransport = t
+        onActiveTransportChangeState(t)
         error = null
 
         try {
