@@ -87,7 +87,7 @@ private fun ConnectedScreen(
             // タブを足すときは番号を連続させること
             ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Hello") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("写真") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("画像") })
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("6DoF") })
                 Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("ナビ") })
                 Tab(selected = tab == 4, onClick = { tab = 4 }, text = { Text("北") })
@@ -101,7 +101,7 @@ private fun ConnectedScreen(
                     onDisplayTextChange = onDisplayTextChange,
                     onDisconnect = onDisconnect,
                 )
-                1 -> PhotoScreen(session = session, gestures = gestures)
+                1 -> ImageRouteScreen(session = session, gestures = gestures)
                 // 6DoF の受信はこの画面が構成から外れた時点で止まる（ImuScreen 側の効果）
                 2 -> ImuScreen(session = session, gestures = gestures)
                 3 -> NaviScreen(session = session, gestures = gestures)

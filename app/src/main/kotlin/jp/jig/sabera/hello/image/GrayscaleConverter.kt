@@ -48,15 +48,15 @@ private val BAYER_4X4 = arrayOf(
 )
 
 /**
- * 196x196 のバッファにどう収めるか。
+ * 与えられた枠にどう収めるか。
  *
  * グラス側の表示サイズはピクセル数がそのままなので、`sendImage` のプロトコルには
  * 拡大率も表示位置も無い（width / height / data のみ）。つまり「大きく見せる」手段は
- * バッファを使い切ることだけ。4:3 の写真を FIT で入れると 196x147 = バッファの 75%
- * しか使わないが、FILL なら 196x196 を全部使える。
+ * バッファを使い切ることだけ。4:3 の写真を FIT で 196x196 に入れると 196x147 =
+ * バッファの 75% しか使わないが、FILL なら 196x196 を全部使える。
  */
 enum class FitMode(val label: String) {
-    /** 正方形に切り取ってバッファを使い切る。グラス上で一番大きく見える */
+    /** 枠と同じ形に切り取って使い切る。グラス上で一番大きく見える */
     FILL("画面いっぱい"),
 
     /** 全体が入るように収める。切り取られないが小さくなる */
@@ -68,7 +68,7 @@ object GrayscaleConverter {
     /**
      * 画像 URI を読み込み、グラスに送れるグレースケールへ変換する。
      *
-     * @param maxDim 一辺の最大画素数。[MAX_GLASS_DIM] 以下にすること
+     * @param maxDim 一辺の最大画素数。正方形の枠に収める
      * @param dither ディザリングを掛けるか。既定は false（下の注記を参照）
      * @param fit [FitMode.FILL] なら正方形に切り取ってバッファを使い切る
      */
@@ -78,9 +78,30 @@ object GrayscaleConverter {
         maxDim: Int = MAX_GLASS_DIM,
         dither: Boolean = false,
         fit: FitMode = FitMode.FILL,
+    ): GrayscaleImage = fromUri(context, uri, maxDim, maxDim, dither, fit)
+
+    /**
+     * 矩形の枠に収める版。
+     *
+     * キャンバスは 576x360 で正方形ではないため、正方形に切り取ると横方向を捨てることになる。
+     * 「どの経路が一番大きく見えるか」を比べるテストでは、経路ごとの枠の形に合わせて
+     * 使い切らないと比較にならない。
+     *
+     * **拡大はしない。** 元画像が枠より小さければ結果も小さくなる。上限を探る実験で
+     * 「指定したサイズで送ったつもりが実際は小さかった」を防ぐため、呼び出し側は
+     * 返ってきた [GrayscaleImage.width] / [GrayscaleImage.height] を見ること。
+     */
+    suspend fun fromUri(
+        context: Context,
+        uri: Uri,
+        targetWidth: Int,
+        targetHeight: Int,
+        dither: Boolean,
+        fit: FitMode,
     ): GrayscaleImage = withContext(Dispatchers.IO) {
-        val decoded = decodeScaled(context, uri, maxDim, fit)
-        val target = if (fit == FitMode.FILL) centerCrop(decoded, maxDim) else decoded
+        val decoded = decodeScaled(context, uri, targetWidth, targetHeight, fit)
+        val target =
+            if (fit == FitMode.FILL) centerCrop(decoded, targetWidth, targetHeight) else decoded
         try {
             toGrayscale(target, dither)
         } finally {
@@ -89,7 +110,13 @@ object GrayscaleConverter {
         }
     }
 
-    private fun decodeScaled(context: Context, uri: Uri, maxDim: Int, fit: FitMode): Bitmap {
+    private fun decodeScaled(
+        context: Context,
+        uri: Uri,
+        targetWidth: Int,
+        targetHeight: Int,
+        fit: FitMode,
+    ): Bitmap {
         val source = ImageDecoder.createSource(context.contentResolver, uri)
         return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             // 既定では API 31+ で HARDWARE bitmap が返り、getPixels() が
@@ -101,11 +128,11 @@ object GrayscaleConverter {
             // 1200万画素の Bitmap を一度も確保せずに済む
             val w = info.size.width
             val h = info.size.height
-            // FIT は長辺を、FILL は短辺を maxDim に合わせる。
-            // FILL は続く centerCrop で正方形にする
+            // FIT は枠に収まるほう、FILL は枠を覆うほうの倍率を採る。
+            // FILL は続く centerCrop で枠の形に切る
             val scale = when (fit) {
-                FitMode.FIT -> minOf(maxDim.toFloat() / w, maxDim.toFloat() / h)
-                FitMode.FILL -> maxOf(maxDim.toFloat() / w, maxDim.toFloat() / h)
+                FitMode.FIT -> minOf(targetWidth.toFloat() / w, targetHeight.toFloat() / h)
+                FitMode.FILL -> maxOf(targetWidth.toFloat() / w, targetHeight.toFloat() / h)
             }
             if (scale < 1f) {
                 decoder.setTargetSize(
@@ -116,17 +143,12 @@ object GrayscaleConverter {
         }
     }
 
-    /** 中央を正方形に切り取る。元が maxDim 未満なら取れるだけ取る */
-    private fun centerCrop(bitmap: Bitmap, maxDim: Int): Bitmap {
-        val side = minOf(maxDim, bitmap.width, bitmap.height)
-        if (side == bitmap.width && side == bitmap.height) return bitmap
-        return Bitmap.createBitmap(
-            bitmap,
-            (bitmap.width - side) / 2,
-            (bitmap.height - side) / 2,
-            side,
-            side,
-        )
+    /** 中央を枠の形に切り取る。元が枠より小さいなら取れるだけ取る */
+    private fun centerCrop(bitmap: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+        val w = minOf(targetWidth, bitmap.width)
+        val h = minOf(targetHeight, bitmap.height)
+        if (w == bitmap.width && h == bitmap.height) return bitmap
+        return Bitmap.createBitmap(bitmap, (bitmap.width - w) / 2, (bitmap.height - h) / 2, w, h)
     }
 
     private fun toGrayscale(bitmap: Bitmap, dither: Boolean): GrayscaleImage {

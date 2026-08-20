@@ -40,7 +40,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import jp.jig.sabera.hello.flipbook.CANVAS_IMAGE_PRESETS
-import jp.jig.sabera.hello.flipbook.CanvasImageBudget
+import jp.jig.sabera.hello.image.CanvasImageBudget
 import jp.jig.sabera.hello.flipbook.CanvasImageCost
 import jp.jig.sabera.hello.flipbook.FlipbookScene
 import jp.jig.sabera.hello.flipbook.PacingSnapshot
