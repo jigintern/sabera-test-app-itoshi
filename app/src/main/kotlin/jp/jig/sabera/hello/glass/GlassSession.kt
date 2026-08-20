@@ -29,6 +29,14 @@ private const val PAGE_SETTLE_MS = 250L
 private const val STATUS_SETTLE_MS = 80L
 
 /**
+ * キャンバスを全消ししてから画像を送るまでの待ち。
+ *
+ * clearCanvas と sendCanvasImage は SDK 内で別々の launch に乗るので、間を空けないと
+ * 画像の先頭チャンクが全消しより先に着いて消される。
+ */
+private const val CANVAS_CLEAR_SETTLE_MS = 80L
+
+/**
  * ナビ画面の表示言語。到着時刻ラベル等の表示切り替えに使われるだけで、画面遷移は起こさない。
  * 送らないとファーム側の既定のままになるので、ページに入るたびに送っておく。
  */
@@ -224,7 +232,7 @@ class GlassSession(val client: GlassClient) {
      * sendImage の 196x196 という上限はこちらには無く、代わりに
      * `w*h*2 + 圧縮後サイズ <= 380000` というグラスの画像バッファで縛られる。
      * この require は**呼び出しスレッドに同期的に飛ぶ**ので、送る前に
-     * [jp.jig.sabera.hello.flipbook.CanvasImageBudget.check] で検算しておくこと。
+     * [jp.jig.sabera.hello.image.CanvasImageBudget.check] で検算しておくこと。
      *
      * [sendImageFrame] と同じく **lock は混線を防がない**。連続で送るなら
      * 1枚ぶんの推定転送時間を空けること。
@@ -248,11 +256,25 @@ class GlassSession(val client: GlassClient) {
     }
 
     /**
-     * キャンバスを1フレーム分まとめて送る。全消しと全描画がこの1パケットに入る。
+     * キャンバスに静止画を1枚だけ置く。前に置いてあった要素と画像は消える。
      *
-     * キャンバスにはページ遷移コマンドが無い（enterCanvasPage は SDK に存在しない）。
-     * sendCanvas が CONTROL_CLEAR を同梱していて、これ自体が画面を作り直す。
+     * [sendCanvasImage] との違いは全消しを挟むところだけ。連続で送るパラパラ漫画では
+     * 毎回消すぶんの待ちが測定値に混ざるので分けてある。1枚だけ出すならこちらを使う。
+     *
+     * lock は取り直さない（[Mutex] は再入できないのでデッドロックする）。中身を
+     * [sendCanvasImage] と重複させているのはそのため。
      */
+    suspend fun showCanvasImage(x: Int, y: Int, width: Int, height: Int, grayscale: ByteArray) {
+        sendLock.withLock {
+            Log.d(TAG, "showCanvasImage: ($x, $y) ${width}x$height (${grayscale.size} bytes)")
+            commands.clearCanvas()
+            delay(CANVAS_CLEAR_SETTLE_MS)
+            withContext(Dispatchers.Default) {
+                commands.sendCanvasImage(x, y, width, height, grayscale)
+            }
+        }
+    }
+
     /** ナビページを開いて案内中にする。案内内容は showNavi / showNaviLargeImage で送る */
     suspend fun showNaviPage() {
         sendLock.withLock {

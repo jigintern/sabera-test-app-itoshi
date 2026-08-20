@@ -10,7 +10,7 @@ SDK の機能をひとつずつ動かして確かめる台として使う。
 | 画面 | 内容 | 使っている SDK API |
 |---|---|---|
 | Hello / World | グラスに文字を出す。耳のつるをシングルタップするたびに `Hello` ↔ `World` が入れ替わる | `enterEmptyScreenPage` / `sendEmptyScreenStatus` / `sendEmptyScreenContent` / `gestureEvents` |
-| 写真 | 端末のギャラリーから選んだ写真をグレースケールに変換してグラスに出す | `enterImageDisplayPage` / `sendImage` |
+| 画像 | 1枚の画像を3つの経路で送り比べる。同じ絵・同じ大きさのまま経路だけ切り替えて、グラス上の見え方の大きさを見る | `sendImage` / `sendCanvasImage` / `sendNaviLargeImage` |
 | 6DoF | サンプルレートと欠損の計測 / ヨードリフト量の計測 / 姿勢のリアルタイム表示 / 首の動きでグラスを操作 | `startImuData` / `stopImuData` / `imuData` / `imuDataStarted` |
 | ナビ | 案内文と地図画像。`sendNavi` と `sendNaviLargeImage` でどこまで大きい地図が通るかを探る | `enterNavigationPage` / `sendNaviStatus` / `sendNavi` / `sendNaviLargeImage` |
 | 北 | 端末の回転ベクトルから絶対方位を求め、常に北を指す矢印をグラスに出す | `sendNaviCourse` / `sendCanvas` |
@@ -137,12 +137,15 @@ IMU は最速 50ms 周期（20Hz）で届く。毎サンプルで `mutableStateO
 `yawDegrees` は ±180 で折り返すので、差が ±180 を超えたら 360 を足し引きして
 連続値に直してから累積する。やらないと折り返しの瞬間に 360 度ぶんの偽ドリフトが出る。
 
-### 画像は 196x196 まで。それが表示サイズの上限
+### sendImage で送れるのは 196x196 まで
 
 **グラスの画面は 576x360 px。** SDK 0.2.1 で追加された Canvas API の KDoc に
 「座標はキャンバス左上を原点にした px で、576x360 の範囲に収める」と明記されている。
-つまり `sendImage` の 196x196 は**画面の横幅の3分の1程度しか占めない**。
-画像が小さく見えるのは仕様であって、送り方の問題ではない。
+`sendImage` の 196x196 はその一部にしか相当しない。
+
+ただし**送れる画素数と、グラス上で何割を占めるかは別の話**である。ファームが拡大して
+描いている疑いが強く、実際 `sendCanvasImage` で 544x340 を出しても見え方は
+あまり変わらなかった。詳しくは下記の「送った画素数と、グラス上の見え方の大きさは別物」。
 
 **SDK 0.4.0 以降は `sendCanvasImage` でもっと大きい画像を置ける。** 下記参照。
 
@@ -159,6 +162,44 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 ディザリングは既定でオフ。転送は量子化後の RLE 圧縮なので、ディザをかけると run が消えて
 圧縮が効かなくなり、送信が大幅に遅くなる。
+
+### 送った画素数と、グラス上の見え方の大きさは別物
+
+**画素数を4倍にしても、見え方が4倍になるわけではない。** `sendCanvasImage` で
+544x340 のパラパラ漫画を出したところ、`sendImage` の 196x196 と**見え方の大きさが
+あまり変わらなかった**（実機での観察）。ファームが経路ごとに勝手な倍率で拡大していると
+考えるのが自然で、`sendImage` の 196x196 が画面の高さいっぱいまで引き伸ばされているなら
+説明がつく。196 → 360 で 1.84倍である。
+
+**この倍率は SDK からは分からない。** プロトコルに拡大率のフィールドは無く
+（キャンバスだけが座標を持つ）、決めているのはファーム側なので、実機で見比べる以外に
+確かめる方法がない。画像タブがその作業のための画面で、こう作ってある:
+
+- **経路を切り替えても大きさの指定を持ち越す。** 既定値に戻してしまうと比較の条件が崩れる
+- **「ものさし」**を題材に用意した。枠・32px ごとの目盛り・中心十字・基準ブロックを
+  黒地に白で描いたもの。SABERA は加算表示で**黒が透過**なので、写真では暗い縁が消えて
+  外周がどこか目で追えず、大きさを判定できない。白い枠は飾りではなく測るための道具
+- 写真を送るときは**白い枠を足す**スイッチで同じことをする
+- 送った条件と、目で見た結果（出た / 出ない）を**送信履歴**に残せる。
+  グラスの表示は端末から観測できないので、記録は手で残すしかない
+
+3経路の縛りはこう違う:
+
+| 経路 | 大きさの縛り | SDK の検査 | 画面を出すまで |
+|---|---|---|---|
+| `sendImage` | 196x196（ファームのバッファ） | 無い | ページに入る |
+| `sendCanvasImage` | `w*h*2 + 圧縮後 <= 380000` | `require` で落ちる | 送るだけ |
+| `sendNaviLargeImage` | 不明（キャンバスと同じバッファ） | 無い | **案内中にする必要がある** |
+
+「SDK の検査が無い」は自由という意味ではなく、**弾かれても何も返ってこない**という意味。
+送信は成功したように見えてグラスには何も出ない。だから `sendImage` に 196 超を、
+`sendNaviLargeImage` に予算超えを投げる実験は**アプリ側で塞いでいない**。
+そこが確かめたいことだから。塞いでいるのは `sendCanvasImage` の予算超えだけで、
+これは SDK の `require` が呼び出しスレッドに同期的に飛んでクラッシュするため。
+
+**`sendNaviLargeImage` は一番大きく出せる見込みだが使い勝手が悪い。** ナビは案内中
+（`NaviStatus.START`）でないと描画されず、グラス側でマップを起動して頭を上げる操作が要る。
+同じ大きさが `sendCanvasImage` で出せるなら移りたい、というのがこの比較の動機である。
 
 ### sendCanvasImage なら 196x196 より大きく置ける（SDK 0.4.0）
 
@@ -305,12 +346,16 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 | `MainActivity.kt` | CompanionDeviceManager まわりの必須配線。冗長に見えても整理しないこと |
 | `glass/GlassSession.kt` | 接続中の1台に対する操作。送信の直列化とジェスチャー購読 |
 | `glass/TextSurface.kt` | テキストをどのページに、どの状態で出すかの唯一の切り替え点 |
-| `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。`FitMode` で切り取りか内接かを選ぶ |
+| `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。矩形の枠に収められる（キャンバスは正方形ではない）。`FitMode` で切り取りか内接かを選ぶ |
 | `image/GrayscaleImage.kt` | 変換結果と、実機と同じ8階調のプレビュー生成 |
 | `image/ThreeBitRle.kt` | SDK の 3bit RLE の写し。`sendImage` の分割でパケット数を数える。SDK の `ThreeBitRleCodec` は AAR に残っていない |
+| `image/ImageRoute.kt` | 画像を出す3経路と、経路ごとの上限・パケット分割・検算。「送れない」と「送れるが映らない」を分けて返す |
+| `image/TestPattern.kt` | ものさしの絵と、写真に白枠を足す処理。黒が透過なので枠が無いと外周が見えない |
+| `image/CanvasImageBudget.kt` | `sendCanvasImage` の予算検算と所要時間の見積り |
+| `ui/ImageRouteScreen.kt` | 画像タブ。3経路の送り比べと送信履歴 |
 | `flipbook/FlipbookScene.kt` | パラパラ漫画の題材。正規化座標で持ち、文字グリッドと画素の両方に同じ絵を出す |
 | `flipbook/CanvasGrid.kt` | 文字グリッドをキャンバス要素に載せる。`12N + T <= 185` の予算検算 |
-| `flipbook/CanvasImageBudget.kt` | `sendCanvasImage` の予算検算と所要時間の見積り。1周ぶんの最悪コマを数える |
+| `flipbook/FlipbookCost.kt` | 1周ぶんのコマを全部圧縮して最悪コマを数える。予算はここで判断する |
 | `flipbook/PacingStats.kt` | 送出レートの集計器。Compose の state ではない |
 | `ui/CanvasImagePanel.kt` | パラパラタブの `sendCanvasImage` 区画。大きさと fps の取引を測る |
 | `compass/PhoneHeading.kt` | 端末の回転ベクトルから絶対方位を求める。平置きと立てで軸を切り替える |
@@ -330,22 +375,25 @@ SDK 0.4.0 時点で手つかずの機能。次に触る人の入口として。
 | 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（下記） |
 | AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
 
-`sendCanvasImage` はパラパラタブで生成した線画しか通していない。**写真を大きく出す経路としては未検証**で、
-`GrayscaleConverter` の出力（196x196 上限のまま）を繋ぎ替えれば 4倍の面積で出せるはず。
-
-### ナビの画像サイズ上限（調査中）
-
-`sendNaviLargeImage` は幅・高さを16bitで送るため、プロトコル上は 65535 まで乗る
-（`sendNavi` の地図は1バイトなので255まで）。`sendImage` の 196x196 より大きい画像を
-出せる可能性がある。
+### 画像サイズの上限（調査中）
 
 実機で確認できたのはここまで:
 
 | 経路 | サイズ | 結果 |
 |---|---|---|
 | `sendNavi` の地図 | 196x196 | **表示された**（四隅まで欠けなし） |
+| `sendCanvasImage` | 544x340 まで | 出たが、見え方の大きさは `sendImage` とあまり変わらなかった |
 
-続きの手順とテスト画像は [testdata/navi/README.md](testdata/navi/README.md) を参照。
+未確認の主な点:
+
+- `sendImage` に 196 超を投げたらどうなるか。何も出なければ 196 の裏付けになる
+- `sendNaviLargeImage` はどこまで通るか。キャンバスと同じ 190,000 画素の壁があるはず
+- 経路ごとの拡大倍率。ものさしの基準ブロックを見比べれば分かる
+- キャンバス画像はファーム 2.2.0 以上が必要。文字グリッドは出るのに画像だけ出ないなら
+  ファームが 2.1.x
+
+画像タブで経路と大きさを切り替えて詰める。ナビのテスト画像は
+[testdata/navi/README.md](testdata/navi/README.md) を参照。
 
 API の一覧は [SDK ドキュメント](https://jig-sabera.github.io/sabera-sdk/) を参照。
 実際の挙動は AAR の sources jar を読むのが早い。

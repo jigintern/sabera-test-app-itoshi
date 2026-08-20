@@ -22,7 +22,7 @@ object ThreeBitRle {
     /**
      * 分割送信の先頭チャンク。**sendImage の値**であることに注意。
      * sendCanvasImage は 192 バイトなので
-     * [jp.jig.sabera.hello.flipbook.CanvasImageBudget.packetCount] を使うこと。
+     * [CanvasImageBudget.packetCount] を使うこと。
      */
     private const val FIRST_CHUNK = 64
 
