@@ -301,7 +301,9 @@ class GlassSession(val client: GlassClient) {
      * 注意が2つ:
      *  - 画像はテキスト要素の**背面**に描かれる。文字グリッドを出した後だと
      *    画像の上に文字が残るので、先に [clearCanvas] すること
-     *  - ナビの全体ルート画像とバッファを共有している。ナビ表示中は使えない
+     *  - ナビの全体ルート画像とバッファを共有している。ナビ表示中は使えない。
+     *    **案内中に送ってもエラーは出ず、ただ何も表示されない。** ナビ経路を試した
+     *    あとは必ず [leaveNavi] を通すこと
      *
      * @param id 画像の識別子。0..7 の8枚まで置ける。同じ id に送ると座標ごと差し替わる
      */
@@ -426,6 +428,37 @@ class GlassSession(val client: GlassClient) {
         sendLock.withLock {
             Log.d(TAG, "enterNaviPageForImages")
             enterNaviStarted()
+        }
+    }
+
+    /**
+     * ナビの案内を終わらせてホームへ戻す。
+     *
+     * これまで**入る道しか無かった**。[showNaviLargeImage] も [showNavi] も
+     * [enterNaviPageForImages] も、すべて [enterNaviStarted] を通って案内中(START)に
+     * するだけで、抜ける先がどこにも無い。一度ナビ経路を押すとグラスは案内中のまま
+     * 居座り、次に別の経路へ切り替えても前のナビ画面が残る。
+     *
+     * キャンバス画像にとってはこれが罠になる。[sendCanvasImage] はナビの全体ルート
+     * 画像とバッファを共有していて、**案内中に送ってもエラーは出ず、ただ何も
+     * 表示されない**。「送信は成功、表示は出ない」と読めてしまう。
+     *
+     * なお 2026-08-20 に実機で確定したキャンバス画像が出なかった原因はこれではなく、
+     * SDK 0.6.0 のフレーム id だった（[sendCanvasImage] の KDoc）。とはいえ
+     * 「ナビ表示中は使えない」は SDK の KDoc に書いてある別口の制約で、抜ける道が
+     * 無いこと自体が経路比較を壊す。ここはその穴を塞ぐためのもの。
+     *
+     * READY に戻してからホームへ抜ける2段構えにしてあるのは、どちらが効くのか
+     * ファームの挙動が分からないため。**実機未確認。** ホームに戻るのは目で見えるので、
+     * 画面が変わらなければこの手当てが効いていないと分かる。
+     */
+    suspend fun leaveNavi() {
+        sendLock.withLock {
+            Log.d(TAG, "leaveNavi")
+            commands.sendNaviStatus(CommandManager.NaviStatus.READY)
+            delay(STATUS_SETTLE_MS)
+            commands.enterHomePage()
+            delay(PAGE_SETTLE_MS)
         }
     }
 
