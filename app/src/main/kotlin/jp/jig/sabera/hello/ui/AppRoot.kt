@@ -95,6 +95,7 @@ private fun ConnectedScreen(
                 Tab(selected = tab == 6, onClick = { tab = 6 }, text = { Text("3D矢印") })
                 Tab(selected = tab == 7, onClick = { tab = 7 }, text = { Text("マイク") })
                 Tab(selected = tab == 8, onClick = { tab = 8 }, text = { Text("設定") })
+                Tab(selected = tab == 9, onClick = { tab = 9 }, text = { Text("8枚") })
             }
             when (tab) {
                 0 -> HelloWorldScreen(
@@ -116,7 +117,9 @@ private fun ConnectedScreen(
                 // マイクの停止は MicScreen 側の効果（LaunchedEffect の finally と DisposableEffect）で行う
                 7 -> MicScreen(session = session, gestures = gestures)
                 // ページの後始末（ホームに戻す）は SettingsProbeScreen 側の DisposableEffect で行う
-                else -> SettingsProbeScreen(session = session, gestures = gestures)
+                8 -> SettingsProbeScreen(session = session, gestures = gestures)
+                // キャンバスの後始末は CanvasMultiImageScreen 側の DisposableEffect で行う
+                else -> CanvasMultiImageScreen(session = session, gestures = gestures)
             }
         }
     }

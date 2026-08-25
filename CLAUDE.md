@@ -63,8 +63,8 @@ SDK は GitHub Packages から取る。Gradle 標準の credentials provider を
 
 ## 3. SDK のバージョン状態
 
-**`app/build.gradle.kts` は 0.4.0 に固定されている。** 0.5.0 と 0.6.0 は公開済みだが未適用。
-上げると壊れる箇所が2つある。
+**`app/build.gradle.kts` は 0.6.0 に固定されている。** 0.4.0 から上げる際に壊れる箇所が
+2つあり、対処済みなので以下は経緯としてそのまま残す。
 
 - **0.5.0 で `sendEmptyScreenStatus` が公開 API から消えた。** `glass/TextSurface.kt` が使用中で、
   これは「ページに入っただけでは本文が出ない」問題への対処そのもの。上流の
@@ -140,7 +140,7 @@ git -c user.name="kaito2001-osaka" -c user.email="kaitoito@pdx.edu" commit
 ```
 
 末尾に `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` を入れる。
-**PR は開かない。マージは人がやる。**
+**方針が変わり、コミットまで作ったら PR を開くようになった。** マージ自体は人が確認してから行う。
 
 ### 仕上げの検証
 
@@ -160,7 +160,7 @@ git -c user.name="kaito2001-osaka" -c user.email="kaitoito@pdx.edu" commit
 
 ## 8. 今の状態
 
-タブは6つ。それぞれ何を試す画面かは [README.md](README.md) の「できること」表を参照。
+タブは7つ。それぞれ何を試す画面かは [README.md](README.md) の「できること」表を参照。
 
 | タブ | 主に叩く API |
 |---|---|
@@ -170,11 +170,10 @@ git -c user.name="kaito2001-osaka" -c user.email="kaitoito@pdx.edu" commit
 | ナビ | `sendNavi` / `sendNaviLargeImage` |
 | 北 | `sendNaviCourse` / `sendCanvas` |
 | パラパラ | `sendCanvas` の文字グリッド / `sendImage` / `sendCanvasImage` |
+| 3D矢印 | `sendCanvas` / `sendLayout` / 6DoF・北を入力に矢印を描く |
 
-### 未マージのブランチ
-
-- `fix/canvas-grid-wrap` — 文字グリッドの折り返しずれの修正。`CellMetrics`（実測フォント寸法）と
-  実測パネルが入っている。**既定値は推測値**なので、実機で測るまでアスキーアートは桁がずれる
+`fix/canvas-grid-wrap`（文字グリッドの折り返しずれの修正。`CellMetrics` と実測パネル）は
+マージ済み。
 
 ### 実機未検証で溜まっているもの
 
