@@ -1,17 +1,24 @@
 package jp.jig.sabera.hello.glass
 
+import android.os.SystemClock
 import android.util.Log
 import app.jigglass.glass.CommandManager
 import app.jigglass.glass.GestureType
 import app.jigglass.glass.GlassClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 private const val TAG = "SABERA"
 
@@ -516,6 +523,73 @@ class GlassSession(val client: GlassClient) {
         // sendNavi の内容は START のときだけ描画される。READY のままだと何も出ない
         commands.sendNaviStatus(CommandManager.NaviStatus.START)
         delay(STATUS_SETTLE_MS)
+    }
+
+    /**
+     * startImuData / stopImuData を1回発行し、その ack（[CommandManager.imuDataStarted] が
+     * [start] に反転すること）を待って往復にかかった時間をミリ秒で返す。
+     *
+     * [jp.jig.sabera.hello.transport.measureLatencyMs] がこれを使って「単発パケットが、
+     * 今リンクが混んでいるときにどれだけ待たされて割り込めるか」を測る。用途の詳細と
+     * 「なぜこれが送信完了の代理にならないか」は measureLatencyMs の KDoc を参照。
+     * commandHook が AAR に実体を持たず `durationMs` を読めない今、これが数少ない
+     * 実測の足がかりになる。
+     *
+     * ## なぜ sendLock を取らないか
+     *
+     * ここで測りたいのはまさに「他の送信（[showCanvasImage] 等）の後ろに積んだときに
+     * どれだけ待たされて割り込めるか」そのものである。sendLock を取ってしまうと、
+     * 測定対象の送信と直列化されて排他してしまい、「他の送信の直後に積む」という
+     * 前提条件そのものを作れなくなる。[showCanvas] が lock を取らないのと理由は同じで、
+     * あの KDoc にある「画像のような複数パケットの転送が流れている最中に呼ぶと
+     * チャンクの間に割り込み、グラス側の再組立を壊す」という注意はここにもそのまま
+     * 当てはまる。実際、この「割り込む」性質のせいで measureLatencyMs は
+     * 送信完了の代理にはならない。
+     *
+     * ## この値が持つ性質（呼び出し側は画面にも必ず書くこと）
+     *
+     * 1. **ack 自身の往復時間が乗る。** 空のキューでこのメソッドを呼んだときの往復
+     *    （[jp.jig.sabera.hello.transport.measureBaselineMs]）を先に測り、差し引かないと、
+     *    リンクの混雑そのものより常に大きく出る
+     * 2. **これは送信完了の指標ではない。** startImuData/stopImuData は単発パケットで
+     *    `sendCommandsMutex` を取らないため、他の送信（分割パケット）のチャンクの間に
+     *    割り込む。ack が返るのは「他の送信が終わった時刻」ではなく
+     *    「このコマンドが割り込めた時刻」でしかない
+     * 3. **FEATURE_VERSION 2.0.0 未満のファームでは ack が永久に来ない。** IMU コマンドが
+     *    読み捨てられるだけで拒否応答も無いため、[withTimeout] で必ず囲んである。
+     *    タイムアウトしたら null を返すので、呼び出し側はファーム不足の可能性を画面に出すこと
+     *
+     * [CommandManager.imuDataStarted] は StateFlow で、値が変わらない限り再emitされない。
+     * 既に目的の状態（例えば既に true のときに [start] = true）を指定すると変化が起きず、
+     * ack は永遠に来ない。呼び出し側は必ず現在と逆の値を指定すること
+     * （`commands.imuDataStarted.value` で確認できる）。
+     */
+    suspend fun probeImuAck(start: Boolean, timeoutMs: Long): Long? {
+        return try {
+            withTimeout(timeoutMs) {
+                coroutineScope {
+                    val subscribed = CompletableDeferred<Unit>()
+                    val ack = async {
+                        commands.imuDataStarted
+                            .onSubscription { subscribed.complete(Unit) }
+                            // StateFlow は購読した瞬間に「今の値」を流す。これは変化ではないので、
+                            // 先に捨てておかないと既に目的の値のときに即座に（ack を待たず）
+                            // 完了してしまう
+                            .drop(1)
+                            .first { it == start }
+                    }
+                    // ack 待ちの購読が確立してから送る。先に送ると、反転が購読前に
+                    // 起きてしまい待ち続けてタイムアウトする恐れがある
+                    subscribed.await()
+                    val t0 = SystemClock.elapsedRealtime()
+                    if (start) commands.startImuData() else commands.stopImuData()
+                    ack.await()
+                    SystemClock.elapsedRealtime() - t0
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            null
+        }
     }
 
     /**
