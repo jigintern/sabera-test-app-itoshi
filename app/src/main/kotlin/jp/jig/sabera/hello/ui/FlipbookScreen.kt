@@ -310,12 +310,24 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "送信完了は観測できない。SDK の送信はキューに積んで即座に返り、" +
-                "commandHook は AAR に公開クラスが残っていないので使えない。" +
-                "ここに出る fps は「アプリが送出を試みたレート」であって、" +
-                "グラスで見えたレートではない。後者は目で数えるしかない",
+            "送信完了そのものは今も観測できない。commandHook は AAR では " +
+                "app.jigglass.glass.j0 という中身が無いインタフェースに難読化で潰れており、" +
+                "実装できるメソッドが無い（R8 が機構ごと落としている）。" +
+                "このタブに出る fps はどれも「アプリが送出を試みたレート」であって、" +
+                "グラスで見えたレートではない",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "下の「リンクの待ち時間（ack 実測・混雑度）」は送信完了とは別のものを測っている。" +
+                "IMU の開始・停止に対する ack は、単発パケットが今リンクが混んでいるときに" +
+                "どれだけ待たされて割り込めるかを表すだけで、直前に積んだ送信がキューを" +
+                "通過し終えた時刻ではない。startImuData/stopImuData は sendCommandsMutex を" +
+                "取らないため、分割送信のチャンクの間に割り込んでしまう（詳しくはそのパネル自身の" +
+                "説明を参照）。推定値（fps・所要時間の見積り）とこの ack 実測値は" +
+                "別の区画・別の列に分けて出し、混ぜて表示しない",
+            style = MaterialTheme.typography.bodySmall,
         )
 
         Spacer(Modifier.height(20.dp))
@@ -678,6 +690,13 @@ fun FlipbookScreen(session: GlassSession, gestures: List<String>) {
             onPlayingChange = { imagePlaying = it },
             onStopGrid = { playing = false },
         )
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(12.dp))
+
+        /* ---- リンクの待ち時間（ack 実測・混雑度） ---- */
+        LinkLatencyPanel(session = session)
 
         Spacer(Modifier.height(20.dp))
         HorizontalDivider()
