@@ -517,4 +517,19 @@ class GlassSession(val client: GlassClient) {
         commands.sendNaviStatus(CommandManager.NaviStatus.START)
         delay(STATUS_SETTLE_MS)
     }
+
+    /**
+     * キャンバスに置いた画像のうち [id] のものだけを消す。
+     *
+     * SDK 0.6.0 で id が増えて以来、このアプリで一度も呼んでいなかった経路。
+     * KDoc に「テキスト要素と他の id の画像は残る」と明記されている
+     * （`CommandManager.removeCanvasImage` のドキュメント。推測ではない）。
+     * 単発パケットなので [sendLock] は取らない。[showCanvas] と同じ理由で、
+     * 複数パケットに分かれる画像転送のような「順序が意味を持つ列」ではないため。
+     * ただし画像の転送中に呼べばチャンクの間に割り込みうる点は他の単発 API と同じ。
+     */
+    fun removeCanvasImage(id: Int) {
+        Log.d(TAG, "removeCanvasImage: id=$id")
+        commands.removeCanvasImage(id)
+    }
 }
