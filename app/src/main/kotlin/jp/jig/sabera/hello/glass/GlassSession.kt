@@ -1,17 +1,24 @@
 package jp.jig.sabera.hello.glass
 
+import android.os.SystemClock
 import android.util.Log
 import app.jigglass.glass.CommandManager
 import app.jigglass.glass.GestureType
 import app.jigglass.glass.GlassClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 private const val TAG = "SABERA"
 
@@ -501,6 +508,257 @@ class GlassSession(val client: GlassClient) {
         commands.closeLayout()
     }
 
+    // ============================================================
+    // 設定タブ用の薄い包み。
+    //
+    // requestSettingSync() / requestSystemStatus() は応答を読む手段が無い。
+    // CommandManager.parseResponse は結果を捨てており、自前で受ける道
+    // （addNormalNotifyCallback + PacketCommandUtils.parseResponsePacket）は
+    // AAR の R8 難読化で閉じている（PacketCommandUtils は AAR に存在せず、
+    // コールバックのインタフェースは中身が空）。だからこの節の API は全部
+    // 「送って、グラスを見る」しかない。それでよい。
+    // ============================================================
+
+    /**
+     * 設定値を送る（整数）。キー名は [CommandManager.SettingKey] を使う。
+     * 単発パケットで他の送信と順序が絡まないので lock は取らない。
+     * 値の型・範囲は firmware 側の仕様が非公開で、SDK にも検査が無い。
+     * 効いたかどうかはグラスを見るしかない。
+     */
+    fun sendSetting(name: String, value: Int) {
+        Log.d(TAG, "sendSetting(Int): $name=$value")
+        commands.sendSetting(name, value)
+    }
+
+    /** 設定値を送る（真偽値） */
+    fun sendSetting(name: String, value: Boolean) {
+        Log.d(TAG, "sendSetting(Boolean): $name=$value")
+        commands.sendSetting(name, value)
+    }
+
+    /** 設定値を送る（文字列） */
+    fun sendSetting(name: String, value: String) {
+        Log.d(TAG, "sendSetting(String): $name=$value")
+        commands.sendSetting(name, value)
+    }
+
+    /** 設定値を送る（バイト列）。SDK 内では文字列とは別の型として扱われる */
+    fun sendSetting(name: String, value: ByteArray) {
+        Log.d(TAG, "sendSetting(ByteArray): $name=${value.size}bytes")
+        commands.sendSetting(name, value)
+    }
+
+    /**
+     * 全設定値の送信をグラスに要求する。
+     * **応答は読めない。** 押せることと、グラス側で何か起きるはずだということしか
+     * このアプリからは確認できない（理由は上のクラスコメント参照）。
+     */
+    fun requestSettingSync() {
+        Log.d(TAG, "requestSettingSync（応答は読めない）")
+        commands.requestSettingSync()
+    }
+
+    /** 応答が読めない事情は [requestSettingSync] と同じ */
+    fun requestSystemStatus() {
+        Log.d(TAG, "requestSystemStatus（応答は読めない）")
+        commands.requestSystemStatus()
+    }
+
+    /** グラス側の設定画面の表示・非表示を通知する。単発パケット */
+    fun sendSettingPageVisibility(show: Boolean) {
+        Log.d(TAG, "sendSettingPageVisibility: $show")
+        commands.sendSettingPageVisibility(show)
+    }
+
+    /**
+     * 画面調整のオーバーレイを出す。
+     *
+     * KDoc 上、これはページ遷移ではなく**今表示している画面に重なる**。このアプリで
+     * 唯一「重ね合わせ」を試せる API なので、他のタブで何か出した状態のまま押して
+     * 確かめる想定。単発パケットなので lock は取らない。
+     */
+    fun sendAdjust(status: CommandManager.AdjustStatus, imageType: CommandManager.AdjustImageType) {
+        Log.d(TAG, "sendAdjust: $status $imageType")
+        commands.sendAdjust(status, imageType)
+    }
+
+    /**
+     * ウェイクアップの傾き閾値（頭を上げて起きる角度）を送る。
+     * SDK 側の require(0..0xFFFF) がそのまま呼び出しスレッドに飛ぶので、ここでは
+     * 畳まずに素通しする（範囲は呼び出し側の入力欄で見せる）。
+     */
+    fun sendWakeupTiltThreshold(degrees: Int) {
+        Log.d(TAG, "sendWakeupTiltThreshold: $degrees")
+        commands.sendWakeupTiltThreshold(degrees)
+    }
+
+    /** ヘッドアップ角度調整ページを開く。実際に頭を動かして確かめる用 */
+    fun enterGlassAngleAdjustmentPage() {
+        Log.d(TAG, "enterGlassAngleAdjustmentPage")
+        commands.enterGlassAngleAdjustmentPage()
+    }
+
+    /** IMU・照度デバッグページを開く */
+    fun enterImuDebugPage() {
+        Log.d(TAG, "enterImuDebugPage")
+        commands.enterImuDebugPage()
+    }
+
+    /** 端末の現在時刻をグラスに同期する。単発パケット */
+    fun syncTime() {
+        Log.d(TAG, "syncTime")
+        commands.syncTime()
+    }
+
+    /**
+     * 天気情報を同期する。
+     *
+     * TEMPERATURE はケルビン**らしい**（根拠は SDK 内の
+     * ClockControlConstants.TEMPERATURE_OFFSET=273 だが、この定数は syncWeather の
+     * 実装からは参照されておらず、サンプルからのコピペで残っているだけなので確証ではなく推測）。
+     * ICON の値の一覧はどこにも文書化されていない。呼び出し側で 0 から順に総当たりして
+     * 記録するしかない。
+     */
+    fun syncWeather(type: CommandManager.WeatherType, value: Int) {
+        Log.d(TAG, "syncWeather: $type=$value")
+        commands.syncWeather(type, value)
+    }
+
+    /**
+     * 通知メッセージを送る。
+     *
+     * **落ちる疑いのある API。** CommandManagerImpl.sendMessage の切り詰めが
+     * `if (title.length > 10) title.substring(0, 16)` になっていて、title が
+     * 11〜15文字のときは16文字目を要求して StringIndexOutOfBoundsException が飛ぶ
+     * （ソースで確認済み）。name 側も `> 10` で `substring(0, 8)` だが、こちらは
+     * 条件を満たす時点で長さが11以上＝8より必ず長いので安全。例外は
+     * sendCommandList を launch する前、呼び出しスレッドで同期的に飛ぶので、
+     * 呼び出し側は try/catch で受けること。
+     */
+    fun sendMessage(name: String, title: String, time: Long, text: String) {
+        Log.d(TAG, "sendMessage: name=$name title.length=${title.length} text.length=${text.length}")
+        commands.sendMessage(name, title, time, text)
+    }
+
+    /** 通知件数を同期する。SDK 内で 0..255 に丸められる */
+    fun syncNotificationCount(count: Int) {
+        Log.d(TAG, "syncNotificationCount: $count")
+        commands.syncNotificationCount(count)
+    }
+
+    /**
+     * AI チャットの正式なシーケンスを送る。
+     *
+     * 公式サンプルは enterAiChatPage + sendAiChatText だけだが、本文のフォントは
+     * 表示言語で決まり、グラスは**ページを開いた時点**のフォントを使うと
+     * enterAiChatPage の KDoc にある。sendAiChatLanguage と enterAiChatPage は
+     * それぞれ独立した sendCommand で、SDK 内では順序が保証されない
+     * （[PAGE_SETTLE_MS] のコメントと同じ理由）。だからここで直列化と待ちを入れる。
+     *
+     * @param languageFirst false にすると順序の罠を意図的に再現できる（A/B比較用）
+     */
+    suspend fun runAiChatSequence(
+        languageCode: String,
+        userText: String,
+        aiText: String,
+        model: CommandManager.AiChatModel? = null,
+        languageFirst: Boolean,
+    ) {
+        sendLock.withLock {
+            Log.d(TAG, "runAiChatSequence: languageFirst=$languageFirst lang=$languageCode")
+            if (languageFirst) {
+                commands.sendAiChatLanguage(languageCode)
+                delay(STATUS_SETTLE_MS)
+                commands.enterAiChatPage()
+            } else {
+                commands.enterAiChatPage()
+                delay(STATUS_SETTLE_MS)
+                commands.sendAiChatLanguage(languageCode)
+            }
+            delay(PAGE_SETTLE_MS)
+            commands.sendAiChatSenderText(CommandManager.AiChatSender.USER, userText)
+            delay(STATUS_SETTLE_MS)
+            commands.sendAiChatSenderStatus(
+                CommandManager.AiChatSender.AI,
+                CommandManager.AiChatStatus.GENERATING,
+            )
+            delay(STATUS_SETTLE_MS)
+            commands.sendAiChatSenderText(CommandManager.AiChatSender.AI, aiText, model)
+            delay(STATUS_SETTLE_MS)
+            commands.sendAiChatStatus(CommandManager.AiChatStatus.COMPLETE)
+        }
+    }
+
+    /** FEATURE_VERSION 1.1.0 以上のファーム向け。それ未満だと読み捨てられる見込み（未文書、要実機確認） */
+    fun clearAiChat() {
+        Log.d(TAG, "clearAiChat")
+        commands.clearAiChat()
+    }
+
+    /** 1.1.0 未満向け。改行を流し込んで見かけ上クリアするので、グラス側に履歴は残る */
+    fun clearAiChatLegacy() {
+        Log.d(TAG, "clearAiChatLegacy")
+        commands.clearAiChatLegacy()
+    }
+
+    /**
+     * テレプロンプタと翻訳が本当に同じ表示バッファを共有しているかを確かめる。
+     *
+     * KDoc には「どちらもファーム側で同じバッファを共有しているため、消去も共通」と
+     * 明記されているが、実機で両方消えるかまでは確認していない。片方ずつ別の文を
+     * 送ってから [clearInscriptionText] を1回だけ呼ぶ導線をここで用意する。
+     */
+    suspend fun probeInscriptionBufferSharing(teleprompterText: String, translateText: String) {
+        sendLock.withLock {
+            Log.d(TAG, "probeInscriptionBufferSharing")
+            commands.enterTeleprompterPage()
+            delay(PAGE_SETTLE_MS)
+            commands.sendTeleprompterStatus(
+                CommandManager.TeleprompterStatus.PAUSED,
+                CommandManager.TeleprompterMode.TELEPROMPT,
+            )
+            delay(STATUS_SETTLE_MS)
+            commands.sendTeleprompterContent(teleprompterText)
+            delay(STATUS_SETTLE_MS)
+            commands.enterTranslatePage()
+            delay(PAGE_SETTLE_MS)
+            commands.sendTranslateContent(translateText)
+        }
+    }
+
+    /** テレプロンプタ・翻訳共通の消去。上記の実験で1回だけ呼ぶことに意味がある */
+    fun clearInscriptionText() {
+        Log.d(TAG, "clearInscriptionText")
+        commands.clearInscriptionText()
+    }
+
+    /**
+     * 汎用テキスト表示ページを、状態を送らずに試す。
+     *
+     * sendEmptyScreenStatus が 0.5.0 で公開 API から消えたため、このページにはもう
+     * 状態を送る手段が無い（[TextSurface] 参照）。ここで本文だけ送って実機に出るかを
+     * 確かめる。**出るなら TextSurface をこちらに戻せる見通しになる（このブランチでは
+     * TextSurface 自体は変更しない）。出なければ 0.5.0 以降のこのページは詰みで、
+     * テレプロンプターページを使い続けるしかないと分かる。**
+     */
+    suspend fun probeEmptyScreen(content: String) {
+        sendLock.withLock {
+            Log.d(TAG, "probeEmptyScreen（状態なし）")
+            commands.enterEmptyScreenPage()
+            delay(PAGE_SETTLE_MS)
+            commands.sendEmptyScreenContent(content)
+        }
+    }
+
+    /**
+     * どのページからでもホームへ戻す。単発パケットで lock は取らない
+     * （closeCanvas / closeLayout と同じ理由。後始末専用の一発なので順序を作る必要が無い）。
+     */
+    fun goHome() {
+        Log.d(TAG, "goHome")
+        commands.enterHomePage()
+    }
+
     /**
      * ナビページに入り直して案内中にする。呼び出し側は sendLock を取っていること。
      *
@@ -531,6 +789,73 @@ class GlassSession(val client: GlassClient) {
     fun removeCanvasImage(id: Int) {
         Log.d(TAG, "removeCanvasImage: id=$id")
         commands.removeCanvasImage(id)
+    }
+
+    /**
+     * startImuData / stopImuData を1回発行し、その ack（[CommandManager.imuDataStarted] が
+     * [start] に反転すること）を待って往復にかかった時間をミリ秒で返す。
+     *
+     * [jp.jig.sabera.hello.transport.measureLatencyMs] がこれを使って「単発パケットが、
+     * 今リンクが混んでいるときにどれだけ待たされて割り込めるか」を測る。用途の詳細と
+     * 「なぜこれが送信完了の代理にならないか」は measureLatencyMs の KDoc を参照。
+     * commandHook が AAR に実体を持たず `durationMs` を読めない今、これが数少ない
+     * 実測の足がかりになる。
+     *
+     * ## なぜ sendLock を取らないか
+     *
+     * ここで測りたいのはまさに「他の送信（[showCanvasImage] 等）の後ろに積んだときに
+     * どれだけ待たされて割り込めるか」そのものである。sendLock を取ってしまうと、
+     * 測定対象の送信と直列化されて排他してしまい、「他の送信の直後に積む」という
+     * 前提条件そのものを作れなくなる。[showCanvas] が lock を取らないのと理由は同じで、
+     * あの KDoc にある「画像のような複数パケットの転送が流れている最中に呼ぶと
+     * チャンクの間に割り込み、グラス側の再組立を壊す」という注意はここにもそのまま
+     * 当てはまる。実際、この「割り込む」性質のせいで measureLatencyMs は
+     * 送信完了の代理にはならない。
+     *
+     * ## この値が持つ性質（呼び出し側は画面にも必ず書くこと）
+     *
+     * 1. **ack 自身の往復時間が乗る。** 空のキューでこのメソッドを呼んだときの往復
+     *    （[jp.jig.sabera.hello.transport.measureBaselineMs]）を先に測り、差し引かないと、
+     *    リンクの混雑そのものより常に大きく出る
+     * 2. **これは送信完了の指標ではない。** startImuData/stopImuData は単発パケットで
+     *    `sendCommandsMutex` を取らないため、他の送信（分割パケット）のチャンクの間に
+     *    割り込む。ack が返るのは「他の送信が終わった時刻」ではなく
+     *    「このコマンドが割り込めた時刻」でしかない
+     * 3. **FEATURE_VERSION 2.0.0 未満のファームでは ack が永久に来ない。** IMU コマンドが
+     *    読み捨てられるだけで拒否応答も無いため、[withTimeout] で必ず囲んである。
+     *    タイムアウトしたら null を返すので、呼び出し側はファーム不足の可能性を画面に出すこと
+     *
+     * [CommandManager.imuDataStarted] は StateFlow で、値が変わらない限り再emitされない。
+     * 既に目的の状態（例えば既に true のときに [start] = true）を指定すると変化が起きず、
+     * ack は永遠に来ない。呼び出し側は必ず現在と逆の値を指定すること
+     * （`commands.imuDataStarted.value` で確認できる）。
+     */
+    suspend fun probeImuAck(start: Boolean, timeoutMs: Long): Long? {
+        return try {
+            withTimeout(timeoutMs) {
+                coroutineScope {
+                    val subscribed = CompletableDeferred<Unit>()
+                    val ack = async {
+                        commands.imuDataStarted
+                            .onSubscription { subscribed.complete(Unit) }
+                            // StateFlow は購読した瞬間に「今の値」を流す。これは変化ではないので、
+                            // 先に捨てておかないと既に目的の値のときに即座に（ack を待たず）
+                            // 完了してしまう
+                            .drop(1)
+                            .first { it == start }
+                    }
+                    // ack 待ちの購読が確立してから送る。先に送ると、反転が購読前に
+                    // 起きてしまい待ち続けてタイムアウトする恐れがある
+                    subscribed.await()
+                    val t0 = SystemClock.elapsedRealtime()
+                    if (start) commands.startImuData() else commands.stopImuData()
+                    ack.await()
+                    SystemClock.elapsedRealtime() - t0
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            null
+        }
     }
 
     /**
