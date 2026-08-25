@@ -517,4 +517,40 @@ class GlassSession(val client: GlassClient) {
         commands.sendNaviStatus(CommandManager.NaviStatus.START)
         delay(STATUS_SETTLE_MS)
     }
+
+    /**
+     * マイク音声を購読する。[collectImuData] と同じ形にしてある。
+     *
+     * micAudio も imuData と同じ replay = 0 の SharedFlow（ただし
+     * extraBufferCapacity = 64, onBufferOverflow = DROP_OLDEST）で、購読者がゼロの間に
+     * 届いたチャンクは捨てられる。onSubscription の中で startMicStreaming() を呼べば、
+     * 購読が確立した後にしか開始要求が出ないため、先頭のチャンクを取りこぼさない。
+     *
+     * DROP_OLDEST なので、購読側の処理が詰まって追いつかないときも古いほうから
+     * 捨てられる。つまり「取りこぼしに見えるもの」が BLE 側の欠落なのか、
+     * このアプリの購読が遅れて捨てただけなのかは、ここからは切り分けられない。
+     *
+     * startMicStreaming() は SDK 内部でまず stopMicStreaming() を呼んでから開き直す
+     * （二重に開くとデコーダと購読が漏れるため）。呼び出し側がこれを気にする必要はない。
+     *
+     * sendLock は取らない。開始・停止は単発のパケットで、[showText] のような
+     * 順序が意味を持つ列ではない。
+     */
+    suspend fun collectMicAudio(onChunk: (ByteArray) -> Unit) {
+        try {
+            commands.micAudio
+                .onSubscription {
+                    Log.d(TAG, "micAudio subscribed -> startMicStreaming")
+                    commands.startMicStreaming()
+                }
+                .collect { chunk -> onChunk(chunk) }
+        } finally {
+            // 購読をやめてもグラスのマイクは開いたままになる。止め忘れると
+            // グラスのマイクが開きっぱなしになるので、抜けるときは必ず止める。
+            // stopMicStreaming() は stopImuData() と同じくキューに積むだけで
+            // suspend しないため、キャンセル後の finally からでも確実に発行できる
+            Log.d(TAG, "micAudio unsubscribed -> stopMicStreaming")
+            commands.stopMicStreaming()
+        }
+    }
 }
