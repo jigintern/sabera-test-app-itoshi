@@ -607,7 +607,15 @@ private suspend fun cleanupTransport(session: GlassSession, transport: ArrowTran
             session.closeCanvas()
         }
         ArrowTransport.LAYOUT_TEXT -> session.closeLayout()
-        ArrowTransport.IMAGE_PAGE, ArrowTransport.NAVI_LARGE_IMAGE -> {}
+
+        // ナビは必ず抜ける。ここを空にしていると案内中(START)のまま居座り、
+        // 次の経路に切り替えても前のナビ画面が残る。とくにキャンバス画像は
+        // ナビの全体ルート画像とバッファを共有していて、案内中は**エラーも
+        // 出さずに何も表示されない**。経路比較がそこで壊れる
+        ArrowTransport.NAVI_LARGE_IMAGE -> session.leaveNavi()
+
+        // 画像ページは開いたままでも他経路の邪魔をしない。抜ける必要が無い
+        ArrowTransport.IMAGE_PAGE -> {}
     }
 }
 
