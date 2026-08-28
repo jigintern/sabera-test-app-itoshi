@@ -267,7 +267,10 @@ fun LinkLatencyPanel(session: GlassSession, modifier: Modifier = Modifier) {
                 "ほど差し引き後の値も伸びるはず。実際には stopImuData がチャンクの間に" +
                 "割り込むだけなので、大きさを変えても差し引き後の値はほぼ変わらないと" +
                 "予想している。もし実機で明確に伸びたら、この読み（割り込んで即座に返る）が" +
-                "誤りだったということになる",
+                "誤りだったということになる。" +
+                "SDK 0.8.1 では sendCommand も sendCommands も単一の順序付きキューを通るため、" +
+                "この「チャンクの間に割り込む」という前提自体が0.6.0時点のものであり、" +
+                "測り直しの対象になった（結論は先取りしない）",
             style = MaterialTheme.typography.bodySmall,
         )
         Spacer(Modifier.height(8.dp))

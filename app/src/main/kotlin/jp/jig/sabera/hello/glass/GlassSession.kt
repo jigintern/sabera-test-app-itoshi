@@ -11,6 +11,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
@@ -19,6 +20,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "SABERA"
 
@@ -29,6 +31,23 @@ private const val TAG = "SABERA"
  * Dispatchers.IO に投げられ、パケットキューの mutex を奪い合う（CommandManagerImpl の
  * sendCommand / sendCommands を参照）。通常は FIFO 通りに流れるが順序は保証されない。
  * ここで直列化と待ちを入れるのは hack ではなく、必要な境界。
+ *
+ * **SDK 0.8.1 で送信経路が変わった事実（推測ではなく sources jar で確認済み）**:
+ * `sendCommand` / `sendCommands` はどちらも `Channel<SendItem>(Channel.UNLIMITED)` に
+ * `trySend()` で積むだけの単一キューに統一され、単一の consumer コルーチンが
+ * FIFO で1件ずつ（1件の中身は複数パケットでも丸ごと）処理する形になった。
+ * SDK 内のコメントに「以前は sendCommand() が呼び出しごとに viewModelScope.launch
+ * していたため、Dispatchers.IO 上でどちらが先に走るかが保証されず、実機で画面遷移
+ * コマンドとマイクONコマンドが逆順で届いてグラス側が誤動作した」とある。
+ * つまり「呼び出し順とキューに積まれる順が一致しない」という、この待ちが元々
+ * 前提していた問題そのものは 0.8.1 で解消された可能性が高い。
+ *
+ * **ただしこの待ちは外していない。** この 250ms にはもう一つ、ファーム側が
+ * ページ遷移を受けてから実際に画面を切り替えるまでの処理時間という別の理由が
+ * 乗っている（こちらは SDK のキュー実装とは無関係で、0.8.1 でも変わっていない）。
+ * 順序保証がキュー側で取れるようになったことで、この 250ms が両方の理由を
+ * 過剰に見積もっているのか、まだファーム側の理由だけで必要な値なのかは
+ * 実機で詰め直す余地がある。ここでは事実を書くだけに留め、値は変えない。
  */
 private const val PAGE_SETTLE_MS = 250L
 
@@ -40,6 +59,11 @@ private const val STATUS_SETTLE_MS = 80L
  *
  * clearCanvas は単発パケットで、SDK 0.6.0 で入った分割送信の直列化（mutex）の外を通る。
  * 間を空けないと画像の先頭チャンクが全消しより先に着いて消される。
+ *
+ * [PAGE_SETTLE_MS] のコメントに書いたとおり、SDK 0.8.1 では単発パケットも含めて
+ * 全部が単一の順序付きキューを通るようになったため、「到着順序が保証されない」
+ * という理由そのものは薄れている可能性がある。ただしこの待ちを外してよいかは
+ * 未検証で、値もここでは変えていない。
  */
 private const val CANVAS_CLEAR_SETTLE_MS = 80L
 
@@ -48,7 +72,10 @@ private const val CANVAS_CLEAR_SETTLE_MS = 80L
  *
  * この2つはどちらも単発の sendCommand で、複数パケット転送どうしの混線を防ぐために
  * SDK 0.6.0 で追加された sendCommandsMutex の対象にもならない。個別の launch に乗る
- * 以上、[PAGE_SETTLE_MS] のコメントと同じ理由で2発の到着順序はSDK側から保証されない。
+ * 以上、[PAGE_SETTLE_MS] のコメントと同じ理由で2発の到着順序はSDK側から保証されない
+ * ——というのが 0.6.0 時点の理解。[PAGE_SETTLE_MS] に書いたとおり、SDK 0.8.1 では
+ * 送信経路が単一の順序付きキューに統一されたため、この「順序不定」という前提が
+ * 今も成り立つかは実機で測り直す余地がある。
  * 後半（sendCanvasElements）が先に着くと、追って届く前半（sendCanvas）の CONTROL_CLEAR が
  * 後半の内容ごと消してしまう。
  * 待てば確実というわけではないが、[CANVAS_CLEAR_SETTLE_MS] と同じ経験則の値を
@@ -81,6 +108,13 @@ class GlassSession(val client: GlassClient) {
 
     private val sendLock = Mutex()
     private val subscribed = CompletableDeferred<Unit>()
+
+    /**
+     * GlassSession が作られた時刻（≒接続した瞬間。AppRoot は connectedDevice が
+     * non-null になった直後に一度だけ作る）。[measureFirstChargingMs] が
+     * 接続からの実測ミリ秒を出すための起点にする。
+     */
+    private val createdAtElapsedRealtime = SystemClock.elapsedRealtime()
 
     val deviceName: String
         get() = client.deviceName ?: client.deviceIdentifier
@@ -511,12 +545,22 @@ class GlassSession(val client: GlassClient) {
     // ============================================================
     // 設定タブ用の薄い包み。
     //
-    // requestSettingSync() / requestSystemStatus() は応答を読む手段が無い。
-    // CommandManager.parseResponse は結果を捨てており、自前で受ける道
-    // （addNormalNotifyCallback + PacketCommandUtils.parseResponsePacket）は
-    // AAR の R8 難読化で閉じている（PacketCommandUtils は AAR に存在せず、
-    // コールバックのインタフェースは中身が空）。だからこの節の API は全部
-    // 「送って、グラスを見る」しかない。それでよい。
+    // requestSettingSync() は今も応答を読む手段が無い。CommandManager.parseResponse は
+    // 結果を捨てており、自前で受ける道（addNormalNotifyCallback +
+    // PacketCommandUtils.parseResponsePacket）は AAR の R8 難読化で閉じている
+    // （PacketCommandUtils は AAR に存在せず、コールバックのインタフェースは
+    // 中身が空）。だからこちらは「送って、グラスを見る」しかない。それでよい。
+    //
+    // requestSystemStatus() は SDK 0.7.0 で事情が変わった。CommandManagerImpl の
+    // ソースを読むと、`SYSTEM_STATUS_RESPONSE` の中身は `PacketCommandUtils` が
+    // BATTERY / WEAR_STATE / CHARGING_STATE の3種類ともパースしているが、
+    // `CommandManagerImpl` が実際に拾って [CommandManager.charging] へ流している
+    // のは CHARGING_STATE だけで、BATTERY と WEAR_STATE を受ける配線が無い
+    // （推測ではなくソースの分岐を確認した事実）。requestSystemStatus() の KDoc は
+    // 0.6.0 から変わらず「バッテリー・装着状態・充電状態の通知をグラスに要求する」
+    // のままだが、実際にアプリへ返ってくるのは充電状態だけ。呼び出し側からは
+    // アプリからは呼ぶ必要すら無い（接続10ms後に SDK が自動で1回呼ぶ）ので、
+    // ここに残しているのは「手で押しても何も増えないこと」を実機で確かめるため。
     // ============================================================
 
     /**
@@ -558,9 +602,18 @@ class GlassSession(val client: GlassClient) {
         commands.requestSettingSync()
     }
 
-    /** 応答が読めない事情は [requestSettingSync] と同じ */
+    /**
+     * バッテリー残量・装着状態・充電状態の通知をグラスに要求する（KDoc の文言そのまま）。
+     *
+     * **実際に読めるのは充電状態（[charging]）だけ。** 残量と装着状態は
+     * `PacketCommandUtils` でパースはされているのに `CommandManagerImpl` から
+     * 先へ流す配線が無い（上のクラスコメント参照）。しかも SDK は接続10ms後に
+     * これを自動で1回呼んでいるので、**アプリから手で押しても新しい情報は増えない。**
+     * ここに残しているのはボタンとしての機能ではなく、その「増えないこと」自体を
+     * 設定タブで実機確認できるようにするため。
+     */
     fun requestSystemStatus() {
-        Log.d(TAG, "requestSystemStatus（応答は読めない）")
+        Log.d(TAG, "requestSystemStatus（充電状態は charging に届く。残量・装着状態は読めない）")
         commands.requestSystemStatus()
     }
 
@@ -893,4 +946,44 @@ class GlassSession(val client: GlassClient) {
             commands.stopMicStreaming()
         }
     }
+
+    /**
+     * 充電中かどうか。SDK 0.7.0 で増えた API で、このアプリにとって初めて
+     * 「グラス側の状態を読める」もの（他の送信系 API はどれも送りっぱなしで応答が
+     * 読めない。[requestSettingSync] のクラスコメント参照）。
+     *
+     * null（未受信）・true（充電中）・false（充電していない）の3値をそのまま
+     * 素通しする。null を「充電していない」に潰すと、この API で唯一おもしろい
+     * 「まだ届いていない」という区別が消える。
+     *
+     * 接続すると SDK が接続10ms後に一度 `requestSystemStatus()` を自動で投げるため
+     * （`CommandManagerImpl` の `SYSTEM_STATUS_REQUEST_DELAY_MS`）、アプリ側から
+     * 明示的に要求する必要はなく、購読するだけで最初の値が届く。切断すると
+     * SDK 側でこの StateFlow が null に戻る（`CommandManagerImpl` の
+     * `connected.collect` 内で確認済み）。
+     */
+    val charging: StateFlow<Boolean?>
+        get() = commands.charging
+
+    /**
+     * 接続してから charging に最初の非null値が届くまでの実測ミリ秒。
+     *
+     * [jp.jig.sabera.hello.transport.measureLatencyMs] の imuDataStarted ack に続いて
+     * このアプリが素直に測れる2つ目の観測可能な inbound。SDK が接続10ms後に自動で
+     * `requestSystemStatus()` を呼ぶため、アプリからは何も送らずにただ待つだけでよい。
+     *
+     * **呼び出しは接続直後、タブより上から始めること。** [jp.jig.sabera.hello.ui.AppRoot]
+     * がジェスチャー購読と同じ場所（session をキーにした LaunchedEffect）から1回だけ
+     * 呼ぶ想定。遅れて呼ぶと、その間に届いていた値をすぐ取得できてしまい、
+     * 「接続からの実測」ではなく「呼んだ時刻からの残り待ち」にすり替わる
+     * （[createdAtElapsedRealtime] は呼び出し時刻ではなく構築時刻を基準にしているため、
+     * 遅れて呼んでも数値自体は正しく出るが、それは「たまたま呼んだときには
+     * もう届いていた」という結果であって、呼ぶタイミングをタブの開閉に依存させない
+     * 設計にしてある理由はそこにある）。
+     */
+    suspend fun measureFirstChargingMs(timeoutMs: Long = 10_000L): Long? =
+        withTimeoutOrNull(timeoutMs) {
+            commands.charging.first { it != null }
+            SystemClock.elapsedRealtime() - createdAtElapsedRealtime
+        }
 }

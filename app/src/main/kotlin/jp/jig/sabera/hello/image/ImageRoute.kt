@@ -12,12 +12,14 @@ package jp.jig.sabera.hello.image
  *
  * | 経路 | 大きさの縛り | SDK の検査 | 画面を出すまで |
  * |---|---|---|---|
- * | [IMAGE_PAGE] | 196x196（ファームのバッファ） | 無い | ページに入る |
+ * | [IMAGE_PAGE] | 196x196（ファームのバッファ） | **SDK 0.8.1 から require で落ちる** | ページに入る |
  * | [CANVAS] | w*h*2 + 圧縮後 <= 380000 | require で落ちる | 送るだけ |
  * | [NAVI_LARGE] | 不明（キャンバスと同じバッファ） | 無い | ナビを案内中にする |
  *
- * 「SDK の検査が無い」は自由という意味ではない。**弾かれても何も返ってこない**という
- * 意味で、送信は成功したように見えてグラスには何も出ない。
+ * [IMAGE_PAGE] は SDK 0.6.0 までは検査が無く、「送れるが映らない見込み」側だった。
+ * [NAVI_LARGE] は今も検査が無い。「SDK の検査が無い」は自由という意味ではなく、
+ * **弾かれても何も返ってこない**という意味で、送信は成功したように見えてグラスには
+ * 何も出ない。
  */
 enum class ImageRoute(
     val label: String,
@@ -27,14 +29,22 @@ enum class ImageRoute(
     /**
      * 画像表示ページ。今まで写真タブが使っていた経路。
      *
-     * 幅・高さは 16bit のTLVで載るのでプロトコル上は 65535 まで表現できる。
-     * 196 はファーム側の静的バッファの都合で、SDK の KDoc にしか書いていない。
-     * つまり **196 を超えて送る実験自体はできる**（例外は飛ばない）。
+     * 幅・高さは 16bit のTLVで載るのでプロトコル上は 65535 まで表現できる。196 は
+     * ファーム側の静的バッファの都合で、SDK 0.6.0 までは KDoc にしか書かれておらず、
+     * **196 を超えて送る実験自体はできた**（例外は飛ばず、弾かれても何も返ってこない
+     * だけだった）。
+     *
+     * **SDK 0.8.1 でこれができなくなった。** `PacketCommandUtils.ImageDisplayKey.
+     * createImagePackets` に `require(width in 1..196 && height in 1..196)` が
+     * 新設され、呼び出しスレッドに同期的に例外が飛ぶようになった（0.6.0 にはこの
+     * 検証が無かった。sources jar を突き合わせて確認済み）。つまり「196 超を実際に
+     * 投げてファームの反応を見る」という実機確認そのものが 0.8.1 では二度とできない。
+     * 0.6.0 のうちに取っておけば残った観測が、上げたことで失われた。
      */
     IMAGE_PAGE(
         label = "画像ページ",
         api = "sendImage",
-        note = "ファームのバッファが 196x196。超えると弾かれて何も出ない見込み",
+        note = "196x196 まで。0.8.1 からは超えると SDK の例外で弾かれる（0.6.0 では黙って弾かれた）",
     ),
 
     /**
@@ -64,11 +74,18 @@ enum class ImageRoute(
     /**
      * この経路でアプリが試させる幅の上限。
      *
-     * [CANVAS] だけが本物の上限（超えると SDK の require で落ちる）。あとの2つは
-     * アプリが決めた探索範囲にすぎない。[IMAGE_PAGE] は 196 の壁を跨げるところまで、
-     * [NAVI_LARGE] は 16bit のTLVなのでプロトコル上は 65535 まで載るが、表示面が
-     * キャンバスと同じ 576x360 だとみて同じ値で止めてある。ここを広げれば
-     * 「画面より大きい画像をファームが縮めて出すか」も試せる。
+     * [CANVAS] は本物の上限（超えると SDK の require で落ちる）。[NAVI_LARGE] は
+     * 16bit のTLVなのでプロトコル上は 65535 まで載るが、表示面がキャンバスと同じ
+     * 576x360 だとみてアプリが同じ値で止めてある探索範囲にすぎない。
+     *
+     * [IMAGE_PAGE] の 384 も**もはや本物の上限ではない**。SDK 0.6.0 まではここまで
+     * スライダーを伸ばすことで「196 の壁を跨いで送り、ファームが黙って弾くかを見る」
+     * という実験ができた。**SDK 0.8.1 で `sendImage` に 196 の `require` が入り、
+     * 196 を超える指定はスライダーやプリセットで選べても [check] が
+     * [RouteCheck.throwsInSdk] を立てて送信を止める。** つまりこの 384 という値は
+     * 「跨げる探索範囲」ではなく「かつて跨げていた範囲の名残」でしかない。プリセットを
+     * 消さずに残してあるのはこの経緯を画面に見せるためで、384 という数値自体を
+     * 196 に縮めてしまうとその経緯が画面から消える。
      */
     val maxWidth: Int
         get() = when (this) {
@@ -111,21 +128,31 @@ enum class ImageRoute(
      * UI は送信を塞がなければならない。false でも [RouteCheck.warning] が付くことはあり、
      * そちらは「送れるが表示されない見込み」を表す。区別が要るのは、後者こそ
      * このテストで確かめたいことだから。
+     *
+     * [IMAGE_PAGE] は SDK 0.8.1 でこの区別自体が消えた。0.6.0 までは196超えが
+     * 「送れるが映らない見込み」（warning）側だったが、0.8.1 の
+     * `ImageDisplayKey.createImagePackets` に `require(width in 1..196 && height in 1..196)`
+     * が入り、超えると呼び出しスレッドで即座に `IllegalArgumentException` が飛ぶように
+     * なった（sources jar で確認済み。推測ではない）。つまり196超は throwsInSdk 側に移った。
      */
     fun check(x: Int, y: Int, width: Int, height: Int, encoded: Int): RouteCheck {
         if (width <= 0 || height <= 0) {
             return RouteCheck(throwsInSdk = this == CANVAS, error = "幅と高さは1以上")
         }
         return when (this) {
-            IMAGE_PAGE -> RouteCheck(
-                throwsInSdk = false,
-                warning = if (width > MAX_GLASS_DIM || height > MAX_GLASS_DIM) {
-                    "${MAX_GLASS_DIM}x$MAX_GLASS_DIM を超えている。SDK は通すがファームが" +
-                        "弾いて何も出ない見込み。何も出なければ上限の裏付けになる"
-                } else {
-                    null
-                },
-            )
+            IMAGE_PAGE -> {
+                val exceeds = width > MAX_GLASS_DIM || height > MAX_GLASS_DIM
+                RouteCheck(
+                    throwsInSdk = exceeds,
+                    error = if (exceeds) {
+                        "SDK 0.8.1 から ${MAX_GLASS_DIM}x$MAX_GLASS_DIM を超えると " +
+                            "IllegalArgumentException で弾かれる（0.6.0 まではここで弾かれず、" +
+                            "ファームが黙って捨てるだけだった。その挙動差はもう実機で確かめられない）"
+                    } else {
+                        null
+                    },
+                )
+            }
 
             CANVAS -> {
                 val budget = CanvasImageBudget.check(x, y, width, height, encoded)
