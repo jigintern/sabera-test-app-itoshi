@@ -564,14 +564,31 @@ private fun SizeControls(
     Spacer(Modifier.height(12.dp))
     Text("大きさ  ${width} x $height", style = MaterialTheme.typography.titleSmall)
     Spacer(Modifier.height(4.dp))
+    // 画像ページは SDK 0.8.1 から196超で例外が飛ぶ。プリセット自体は消さず、
+    // 196超のものだけ押せなくして理由を出す。0.6.0 時点では選べていたという
+    // 経緯を画面から消さないため
+    val blockedPreset = route == ImageRoute.IMAGE_PAGE
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         WIDTH_PRESETS.filter { it <= maxWidth }.forEach { option ->
+            val blocked = blockedPreset && option > MAX_GLASS_DIM
             FilterChip(
                 selected = width == option,
+                enabled = !blocked,
                 onClick = { onWidthChange(option) },
                 label = { Text("$option") },
             )
         }
+    }
+    if (blockedPreset && WIDTH_PRESETS.any { it in (MAX_GLASS_DIM + 1)..maxWidth }) {
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "${MAX_GLASS_DIM}を超えるプリセットは押せない。SDK 0.8.1 から sendImage が" +
+                "196超で IllegalArgumentException を投げるようになったため。0.6.0 では" +
+                "ここが押せて「送れるが映らない」を確かめられたが、0.8.1 ではその確認自体が" +
+                "できなくなった",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
     Slider(
         value = width.toFloat(),

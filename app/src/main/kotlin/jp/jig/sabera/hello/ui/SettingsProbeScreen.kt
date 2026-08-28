@@ -23,6 +23,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -32,12 +33,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.jigglass.glass.CommandManager
 import jp.jig.sabera.hello.glass.GlassSession
+import jp.jig.sabera.hello.glass.SdkErrorLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -51,7 +56,12 @@ import kotlin.math.roundToInt
  * 両方に「推測」であることを明記してある。
  */
 @Composable
-fun SettingsProbeScreen(session: GlassSession, gestures: List<String>) {
+fun SettingsProbeScreen(
+    session: GlassSession,
+    gestures: List<String>,
+    firstChargingMs: Long?,
+    measuringFirstCharging: Boolean,
+) {
     val scope = rememberCoroutineScope()
 
     // このタブは AI チャット・翻訳・テレプロンプタ・汎用テキスト・角度調整など
@@ -70,12 +80,17 @@ fun SettingsProbeScreen(session: GlassSession, gestures: List<String>) {
         Text("設定と未踏ページ", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "この画面のAPIには応答を読む手段が無いものが多い。CommandManager.parseResponse は" +
+            "この画面のAPIの多くは応答を読む手段が無い。CommandManager.parseResponse は" +
                 "結果を捨てており、自前で受ける道（addNormalNotifyCallback + " +
                 "PacketCommandUtils.parseResponsePacket）はAARのR8難読化で閉じている。" +
-                "だから「送って、グラスを見る」しかない。それでよい。",
+                "だからほとんどは「送って、グラスを見る」しかない。それでよい。" +
+                "唯一の例外が charging（下の節）で、SDK 0.7.0 でグラスから読める状態が" +
+                "初めて増えた。",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        SectionDivider()
+        ChargingSection(session, firstChargingMs, measuringFirstCharging)
 
         SectionDivider()
         SettingsSection(session, scope)
@@ -103,6 +118,9 @@ fun SettingsProbeScreen(session: GlassSession, gestures: List<String>) {
 
         SectionDivider()
         EmptyScreenSection(session, scope)
+
+        SectionDivider()
+        ErrorReportSection()
 
         Spacer(Modifier.height(16.dp))
         GestureLog(gestures)
@@ -464,11 +482,16 @@ private fun StatusRequestSection(session: GlassSession) {
     Text("2. 状態を要求する", style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(4.dp))
     Text(
-        "requestSettingSync / requestSystemStatus は押せるが、応答は読めない。" +
-            "CommandManager.parseResponse は結果を捨てており、自前で受ける道" +
-            "（addNormalNotifyCallback + PacketCommandUtils.parseResponsePacket）はAARの" +
-            "R8難読化で閉じている（PacketCommandUtilsはAARに存在せず、コールバックの" +
-            "インタフェースは中身が空）。押した事実だけがここに残る。",
+        "requestSettingSync は押せるが応答は読めない。CommandManager.parseResponse は" +
+            "結果を捨てており、自前で受ける道（addNormalNotifyCallback + " +
+            "PacketCommandUtils.parseResponsePacket）はAARのR8難読化で閉じている" +
+            "（PacketCommandUtilsはAARに存在せず、コールバックのインタフェースは中身が空）。" +
+            "押した事実だけがここに残る。" +
+            "requestSystemStatus は事情が違う。充電状態だけは上の「0. 充電状態」の " +
+            "charging に届くようになった（SDK 0.7.0）。ただし SDK が接続10ms後に自動で" +
+            "1回呼んでいるので、ここで手で押しても新しい情報は増えない。残量・装着状態は" +
+            "今も読めない（PacketCommandUtils ではパースされているのに CommandManager へ" +
+            "流す配線が無い）。",
         style = MaterialTheme.typography.bodySmall,
     )
     FirmwareNote("不明（応答が読めないので、そもそも切り分けようがない）")
@@ -484,12 +507,164 @@ private fun StatusRequestSection(session: GlassSession) {
         Button(
             onClick = {
                 session.requestSystemStatus()
-                status = "requestSystemStatus を送った（応答は読めない）"
+                status = "requestSystemStatus を送った。charging に変化があれば上のバーに" +
+                    "出るはずだが、SDK が自動で既に呼んでいるので新しい値は増えない見込み"
             },
             modifier = Modifier.weight(1f),
         ) { Text("requestSystemStatus") }
     }
     StatusText(status)
+}
+
+/**
+ * charging（SDK 0.7.0）の詳細節。
+ *
+ * このアプリにとって初めて「送りっぱなしではなくグラスから読める状態」なので、
+ * 他の節と違って唯一の要求 API ではなく観測結果そのものを見せる節にしてある。
+ */
+@Composable
+private fun ChargingSection(
+    session: GlassSession,
+    firstChargingMs: Long?,
+    measuringFirstCharging: Boolean,
+) {
+    val charging by session.charging.collectAsStateWithLifecycle()
+
+    Text("0. 充電状態（charging）", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "SDK 0.7.0 で増えた val charging: StateFlow<Boolean?>。KDoc の逐語は" +
+            "「グラスが充電中なら true。状態がまだ届いていないうちは null。接続すると" +
+            "SDK が一度状態を要求するので、購読するだけでよい。以降はグラス側の変化通知で" +
+            "更新される。切断すると null に戻る」。上部バーにも同じ値を出している。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    FirmwareNote("不明（未文書。requestSystemStatus に応答するファームであれば動く見込み）")
+
+    Spacer(Modifier.height(12.dp))
+    StatRow("現在の充電状態", chargingLabel(charging))
+    Text(
+        "null・true・false を3状態のまま区別している。null（未受信）を false" +
+            "（充電していない）に潰さないこと。潰すとこの API で一番おもしろい" +
+            "「まだ届いていない」という区別が消える。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+
+    Spacer(Modifier.height(12.dp))
+    Text("接続から最初の非nullまでの実測", style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "startImuData/stopImuData の ack（LinkLatencyPanel）に続いて、このアプリが" +
+            "素直に測れる2つ目の観測可能な inbound。SDK が接続10ms後に自動で" +
+            "requestSystemStatus() を呼ぶため、アプリからは何も送らずにただ待つだけでよい。" +
+            "測定はタブより上（AppRoot）で接続直後から始めており、この設定タブを開く" +
+            "タイミングには依存しない。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Spacer(Modifier.height(4.dp))
+    when {
+        measuringFirstCharging -> StatRow("実測", "計測中...")
+        firstChargingMs != null -> StatRow("実測", "${firstChargingMs}ms")
+        else -> Text(
+            "10秒待っても非nullが届かなかった。ファームが requestSystemStatus に" +
+                "応答していない可能性がある",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+
+    Spacer(Modifier.height(12.dp))
+    Text("切断すると null に戻ることの確認", style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "手順: 上の「現在の充電状態」が true か false になっているのを確認 → グラスの" +
+            "電源を切る、またはこの画面から切断する → 上部バーと上の表示が両方 " +
+            "「未受信」に戻るのを見る → 再接続して再び非nullに戻るのを見る。" +
+            "この一連の流れは自動化していない（切断操作自体がこのアプリの外の操作のため）。" +
+            "実機で確認すること。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+
+    Spacer(Modifier.height(12.dp))
+    Text("残量・装着状態は依然として読めない", style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "requestSystemStatus の KDoc は0.6.0から変わらず「バッテリー残量・装着状態・" +
+            "充電状態の通知をグラスに要求する」のままだが、SDK 内部" +
+            "（CommandManagerImpl）を読むと分岐が拾っているのは SYSTEM_STATUS_CHARGING_STATE" +
+            "だけ。SYSTEM_STATUS_BATTERY と SYSTEM_STATUS_WEAR_STATE は " +
+            "PacketCommandUtils でパースはされているのに、CommandManager へ流す配線が" +
+            "無い（推測ではなくソースの分岐で確認済み）。KDoc とアプリから実際に読める" +
+            "範囲が食い違っている、という事実をここに残す。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+/**
+ * setErrorReporter（SDK 0.8.1）の詳細節。
+ *
+ * [SdkErrorLog] はプロセス内のリングバッファで、SaberaApp.kt が
+ * GlassesSDK.setErrorReporter で配線している。ここは押して送るAPIではなく、
+ * 溜まった記録を見せるだけの節にしてある。
+ */
+@Composable
+private fun ErrorReportSection() {
+    var entries by remember { mutableStateOf(SdkErrorLog.snapshot()) }
+
+    // 他のタブでの送信中に握り潰しが起きることもあるので、この節を開いている間は
+    // 定期的に読み直す。1秒間隔は十分粗く、Compose の state 更新を圧迫しない
+    LaunchedEffect(Unit) {
+        while (true) {
+            entries = SdkErrorLog.snapshot()
+            delay(1_000L)
+        }
+    }
+
+    Text("10. SDK エラーレポート（setErrorReporter）", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "SDK 0.8.1 で増えた API。KDoc の逐語は「SDK 内部で握り潰した失敗の記録先を" +
+            "差し替える。デフォルトは no-op。ログと違い本番ビルドでも配線する想定」。" +
+            "SaberaApp.kt がプロセス起動時に配線し、受けた例外をこの画面が読む" +
+            "リングバッファ（SdkErrorLog、上限50件・古いものから破棄）に溜めている。" +
+            "これまで「エラーも出ずに何も起きない」で片付けていた現象の一部が、" +
+            "ここに記録として現れる可能性がある。",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    FirmwareNote("不明（このAPIはSDK内部の話で、ファームとは無関係）")
+
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = { entries = SdkErrorLog.snapshot() },
+            modifier = Modifier.weight(1f),
+        ) { Text("更新") }
+        OutlinedButton(
+            onClick = { SdkErrorLog.clear(); entries = emptyList() },
+            modifier = Modifier.weight(1f),
+        ) { Text("消す") }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    if (entries.isEmpty()) {
+        Text(
+            "まだ何も記録されていない。これは「SDK が何も握り潰していない証拠」には" +
+                "ならない——setErrorReporter が実際にどの失敗で呼ばれるかは SDK 側の" +
+                "実装次第で、アプリの外からは分からない。空であること自体も観測結果として" +
+                "ここに書く。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        Text("記録（新しいものが上）", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        entries.take(20).forEach { entry ->
+            Text(
+                "${entry.atElapsedRealtimeMs}ms  ${entry.typeName}: ${entry.message ?: "(メッセージなし)"}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
 }
 
 @Composable

@@ -15,6 +15,11 @@ SDK の機能をひとつずつ動かして確かめる台として使う。
 | ナビ | 案内文と地図画像。`sendNavi` と `sendNaviLargeImage` でどこまで大きい地図が通るかを探る | `enterNavigationPage` / `sendNaviStatus` / `sendNavi` / `sendNaviLargeImage` |
 | 北 | 端末の回転ベクトルから絶対方位を求め、常に北を指す矢印をグラスに出す | `sendNaviCourse` / `sendCanvas` |
 | パラパラ | 同じ絵を3つの経路で送って比べる。文字グリッド / `sendImage` / `sendCanvasImage`。解像度と fps を変えられる | `sendCanvas` / `sendCanvasElements` / `sendImage` / `sendCanvasImage` |
+| 3D矢印 | 3D矢印を5経路（画像ページ・キャンバス画像・ナビ大画像・キャンバス文字絵・分割レイアウト）で送り比べ、レートと予算を測る。北・6DoF どちらの姿勢も入力にできる | `sendImage` / `sendCanvasImage` / `sendNaviLargeImage` / `sendCanvas` / `sendLayout` |
+| マイク | 「音を録る」のではなく「音がどう届くか」を測る。毎秒バイト数・チャンク間隔・サイズ分布 | `startMicStreaming` / `stopMicStreaming` / `micAudio` |
+| 設定 | 送りっぱなしの各種設定・状態要求・充電状態・SDKエラーレポートをまとめた台。応答が読めないAPIが多い中で、`charging` だけは実際に読める | `sendSetting` / `requestSettingSync` / `requestSystemStatus` / `charging` / `sendAdjust` / `syncTime` / `syncWeather` / `sendMessage` / AIチャット系 |
+| 8枚 | SDK 0.6.0 の `sendCanvasImage(id=...)` 対応（画像を8枚同時に置ける）を試す。予算は置いてある全部の合計で見る | `sendCanvasImage` / `removeCanvasImage` |
+| 同時 | IMU・マイクを背景に流しながら前景（3D矢印の5経路）を送ったときの干渉を測る | `sendCanvasImage` / `startImuData` / `startMicStreaming` |
 
 どの画面にも受信したジェスチャーのログを常に出している。
 実機で「タップが届いていないのか / 種別が違うのか / そもそも購読できていないのか」を切り分けるのに使う。
@@ -195,15 +200,24 @@ SDK が輝度の上位3bitだけを使う（8階調）ので、端末のプレ�
 
 | 経路 | 大きさの縛り | SDK の検査 | 画面を出すまで |
 |---|---|---|---|
-| `sendImage` | 196x196（ファームのバッファ） | 無い | ページに入る |
+| `sendImage` | 196x196（ファームのバッファ） | **SDK 0.8.1 から `require` で落ちる**（0.6.0 までは無し） | ページに入る |
 | `sendCanvasImage` | `w*h*2 + 圧縮後 <= 380000` | `require` で落ちる | 送るだけ |
 | `sendNaviLargeImage` | 不明（キャンバスと同じバッファ） | 無い | **案内中にする必要がある** |
 
-「SDK の検査が無い」は自由という意味ではなく、**弾かれても何も返ってこない**という意味。
-送信は成功したように見えてグラスには何も出ない。だから `sendImage` に 196 超を、
-`sendNaviLargeImage` に予算超えを投げる実験は**アプリ側で塞いでいない**。
-そこが確かめたいことだから。塞いでいるのは `sendCanvasImage` の予算超えだけで、
-これは SDK の `require` が呼び出しスレッドに同期的に飛んでクラッシュするため。
+**この表は SDK 0.6.0 時点の記述だった。** 当時「SDK の検査が無い」は自由という意味ではなく、
+**弾かれても何も返ってこない**という意味で、送信は成功したように見えてグラスには何も出ない。
+だから `sendImage` に 196 超を、`sendNaviLargeImage` に予算超えを投げる実験は
+**アプリ側で塞いでいなかった。** そこが確かめたいことだったから。塞いでいたのは
+`sendCanvasImage` の予算超えだけで、これは SDK の `require` が呼び出しスレッドに
+同期的に飛んでクラッシュするためだった。
+
+**SDK 0.8.1 で `sendImage` にも `require(width in 1..196 && height in 1..196)` が入り、
+上の表の前提が崩れた。** 196 超はもう「送れるが映らない見込み」ではなく
+「呼び出しスレッドで即座に `IllegalArgumentException`」になる。だから画像タブは
+196超を今もアプリ側で塞いでいる（プリセットは消さず、押せなくして理由を出す形。
+[image/ImageRoute.kt](app/src/main/kotlin/jp/jig/sabera/hello/image/ImageRoute.kt) 参照）。
+**196超を投げてファームの反応を見るという実機確認自体が、0.8.1 では二度とできない。**
+0.6.0のうちに実機で確かめておけば決着した観測だった。
 
 **`sendNaviLargeImage` は一番大きく出せる見込みだが使い勝手が悪い。** ナビは案内中
 （`NaviStatus.START`）でないと描画されず、グラス側でマップを起動して頭を上げる操作が要る。
@@ -309,6 +323,21 @@ SDK 内の mutex で直列化され、続けて呼んでも画像Aを送り切�
 544x340 は18万画素あるので、Main で呼ぶとスライダーが引っかかる。
 `GlassSession` 側で `Dispatchers.Default` に逃がしている。
 
+**SDK 0.8.1 でこの節の前提がさらに変わった（sources jar で確認済み。事実のみ）。**
+`sendCommand`（単発パケット）と `sendCommands`（分割パケット）が両方とも
+`Channel<SendItem>(Channel.UNLIMITED)` という単一キューに `trySend()` で積まれ、
+単一の consumer コルーチンが FIFO で1件ずつ（1件が複数パケットでも丸ごと）処理する
+形に統一された。SDK 内のコメントに「以前は sendCommand() が呼び出しごとに
+viewModelScope.launch していたため、Dispatchers.IO 上でどちらが先に走るかが
+保証されず、実機で画面遷移コマンドとマイクONコマンドが逆順で届いてグラス側が
+誤動作した」とある。**つまり「直列化されるのは分割送信だけ」という上の段落の前提が
+0.8.1 では崩れている可能性が高い。** 単発パケットの `clearCanvas` / `sendCanvas` /
+`sendCanvasElements` も同じキューを通るようになったなら、「画像の転送中に呼ぶと
+チャンクの間に割り込む」という挙動そのものが無くなっている見込みがある。
+**ただしこれは実機で測り直していない。** `GlassSession` の待ち（`PAGE_SETTLE_MS` 等）は
+外していない。順序保証とは別に、ファーム側の処理時間という理由がまだ乗っている
+可能性があるため（詳細は `glass/GlassSession.kt` の `PAGE_SETTLE_MS` KDoc）。
+
 ### 画像が出ないときはまず SDK のバージョン
 
 **`sendCanvasImage` のフレームは 0.6.0 で変わった。** 画像の先頭パケットは
@@ -389,6 +418,7 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 |---|---|
 | `SaberaApp.kt` | SDK の SPI 差し込み。他のどの SDK API よりも先に実行する必要がある |
 | `MainActivity.kt` | CompanionDeviceManager まわりの必須配線。冗長に見えても整理しないこと |
+| `glass/SdkErrorLog.kt` | `setErrorReporter`（SDK 0.8.1）が受けた例外を溜めるプロセス内リングバッファ |
 | `glass/GlassSession.kt` | 接続中の1台に対する操作。送信の直列化とジェスチャー購読 |
 | `glass/TextSurface.kt` | テキストをどのページに、どの状態で出すかの唯一の切り替え点 |
 | `image/GrayscaleConverter.kt` | 写真 → グラスに送れるグレースケールへの変換。矩形の枠に収められる（キャンバスは正方形ではない）。`FitMode` で切り取りか内接かを選ぶ |
@@ -413,15 +443,37 @@ SDK 側にバージョン検査は無く、古いファームには送るだけ�
 
 ## 今後試せること
 
-SDK 0.6.0 時点で手つかずの機能。次に触る人の入口として。
+SDK 0.8.1 時点で手つかずの機能。次に触る人の入口として。
 
 | 機能 | API | 追加 | 備考 |
 |---|---|---|---|
-| マイクのストリーミング | `startMicStreaming` / `micAudio: SharedFlow<ByteArray>` | 0.4.0 | Opus のデコードは SDK 側。**Android はそのまま PCM が取れる** |
-| 分割レイアウト | `sendLayout` / `sendLayoutTexts` / `closeLayout` | 0.2.0 | 全画面・上下・左右・4分割。**ファーム 2.0.0 以上** |
-| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（下記） |
-| キャンバス画像の複数枚置き | `sendCanvasImage(id = ...)` / `removeCanvasImage` | 0.6.0 | id ごとに8枚。予算は**全部の合計**で見る。並べて比べる用途に向く |
-| AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | |
+| キャンバスの動画（アニメーション） | `startCanvasAnimation` / `sendCanvasAnimationFrame` / `stopCanvasAnimation` | 0.8.1 | **このブランチでは実装しない（別ブランチの予定）。** コマは使い捨てで `sendCanvasImage` のバッファ容量に縛られない。ファーム 2.3.0 以上。静的画像とは同時に置けない |
+| 各種設定 | `sendSetting` / `requestSettingSync`（`SettingKey` 参照） | — | 応答を受け取る手段が無い（設定タブ参照） |
+| AI チャット | `enterAiChatPage` / `sendAiChatSenderText` | — | 設定タブで正式なシーケンスを試せる |
+
+マイク・分割レイアウト・キャンバス画像の複数枚置き・充電状態は実装済み（上の「できること」表参照）。
+
+### 充電状態（`charging`）— 初めて読めるようになったグラス側の状態（SDK 0.7.0）
+
+これまでの `requestSettingSync` / `requestSystemStatus` はどちらも「送って、グラスを見る」
+しかなかったが、`charging: StateFlow<Boolean?>` だけは実際にアプリへ読める値が返ってくる。
+null（未受信）・true（充電中）・false（充電していない）の3値を上部バーと設定タブに
+そのまま出している。詳細は [glass/GlassSession.kt](app/src/main/kotlin/jp/jig/sabera/hello/glass/GlassSession.kt)
+と [ui/SettingsProbeScreen.kt](app/src/main/kotlin/jp/jig/sabera/hello/ui/SettingsProbeScreen.kt)。
+
+**バッテリー残量と装着状態は今も読めない。** `requestSystemStatus` の KDoc は0.6.0から
+変わらず「バッテリー残量・装着状態・充電状態の通知をグラスに要求する」のままだが、
+SDK 内部（`CommandManagerImpl`）を読むと拾っているのは `SYSTEM_STATUS_CHARGING_STATE`
+だけで、`SYSTEM_STATUS_BATTERY` と `SYSTEM_STATUS_WEAR_STATE` は `PacketCommandUtils`
+でパースはされているのに `CommandManager` へ流す配線が無い（推測ではなくソースの
+分岐で確認済み）。
+
+### SDK エラーレポート（`setErrorReporter`）— SDK 0.8.1
+
+`GlassesSDK.setErrorReporter(sink)` で、SDK 内部が握り潰していた失敗を受け取れるように
+なった。`SaberaApp.kt` で配線し、`glass/SdkErrorLog.kt` のリングバッファ（上限50件）に
+溜めて設定タブに出している。何も溜まらない場合もそれ自体が観測結果であり、
+「SDK が何も握り潰していない証拠」にはならない点は画面にも明記した。
 
 ### 画像サイズの上限（調査中）
 
@@ -433,15 +485,27 @@ SDK 0.6.0 時点で手つかずの機能。次に触る人の入口として。
 | `sendCanvasImage` | 544x340 まで | 出たが、見え方の大きさは `sendImage` とあまり変わらなかった（SDK 0.4.0 のとき） |
 | `sendCanvasImage`（SDK 0.6.0） | 未記録 | **表示された**。同じ操作が 0.4.0 では何も出なかった（フレーム非互換） |
 
+**`sendImage` に196超を投げたときの挙動は、もう実機で確かめられない。** SDK 0.8.1 で
+`PacketCommandUtils.ImageDisplayKey.createImagePackets` に
+`require(width in 1..196 && height in 1..196)` が新設され、196超は呼び出しスレッドで
+即座に `IllegalArgumentException` になる（sources jar で確認済み）。0.6.0 まではこの
+検証が無く、196超は「送れるがファームが黙って捨てる」だった。**この宿題は0.6.0の
+うちに実機で試しておけば決着した観測だったが、0.8.1へ上げたことで、その手段自体が
+失われた。** 画像タブの `IMAGE_PAGE` はこの経緯を残すため、196超のプリセットを
+消さずに押せなくして理由を表示している（[image/ImageRoute.kt](app/src/main/kotlin/jp/jig/sabera/hello/image/ImageRoute.kt) 参照）。
+
 未確認の主な点:
 
-- `sendImage` に 196 超を投げたらどうなるか。何も出なければ 196 の裏付けになる
 - `sendNaviLargeImage` はどこまで通るか。キャンバスと同じ 190,000 画素の壁があるはず
 - 経路ごとの拡大倍率。ものさしの基準ブロックを見比べれば分かる
 - キャンバス画像はファーム 2.2.0 以上が必要。文字グリッドは出るのに画像だけ出ないなら
   ファームが 2.1.x（SDK が 0.6.0 以上であることを先に確かめること）
-- 0.6.0 で id ごとに8枚置けるようになった。合計予算 380,000B の中で何枚まで並ぶか
-- 上の 544x340 の上限と見え方は 0.4.0 のフレームで測った値。0.6.0 で測り直す
+- 0.6.0 で id ごとに8枚置けるようになった。合計予算 380,000B の中で何枚まで並ぶか（「8枚」タブ）
+- 上の 544x340 の上限と見え方は 0.4.0 のフレームで測った値。0.6.0 以降で測り直す
+- SDK 0.8.1 で送信キューが単一の順序付きキュー（`Channel(UNLIMITED)` + 単一consumer）に
+  統一されたため、`LinkLatencyPanel` が前提にしていた「単発コマンドが複数パケット転送の
+  チャンクの間に割り込む」という0.6.0時点の読みが今も成り立つか測り直しが要る
+  （詳細は [transport/LinkLatency.kt](app/src/main/kotlin/jp/jig/sabera/hello/transport/LinkLatency.kt) の KDoc）
 
 画像タブで経路と大きさを切り替えて詰める。ナビのテスト画像は
 [testdata/navi/README.md](testdata/navi/README.md) を参照。

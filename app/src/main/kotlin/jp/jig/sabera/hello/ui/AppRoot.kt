@@ -27,6 +27,18 @@ import jp.jig.sabera.hello.glass.GlassSession
 const val TEXT_HELLO = "Hello"
 const val TEXT_WORLD = "World"
 
+/**
+ * [GlassSession.charging] の3値をそのまま文字にする。
+ *
+ * null を false に潰さないこと。「まだ届いていない」と「充電していない」は別の情報で、
+ * 潰すと SDK 0.7.0 で charging が増えた意味そのものが画面から消える。
+ */
+internal fun chargingLabel(charging: Boolean?): String = when (charging) {
+    null -> "未受信"
+    true -> "充電中"
+    false -> "充電していない"
+}
+
 @Composable
 fun AppRoot(manager: GlassManager) {
     // 接続状態はこの Flow ひとつだけを見る
@@ -55,12 +67,25 @@ fun AppRoot(manager: GlassManager) {
         }
     }
 
+    // charging の到達待ちも、ジェスチャー購読と同じ理由でタブより1段上から始める。
+    // 設定タブを開くまで待つと、その間に届いていた値をすぐ取れてしまい、
+    // 「接続からの実測」ではなく「タブを開いた時刻からの残り待ち」にすり替わる
+    var firstChargingMs by remember(session) { mutableStateOf<Long?>(null) }
+    var measuringFirstCharging by remember(session) { mutableStateOf(true) }
+    LaunchedEffect(session) {
+        measuringFirstCharging = true
+        firstChargingMs = session.measureFirstChargingMs()
+        measuringFirstCharging = false
+    }
+
     ConnectedScreen(
         session = session,
         gestures = gestures,
         displayText = displayText,
         onDisplayTextChange = { displayText = it },
         onDisconnect = { manager.disconnect(session.client) },
+        firstChargingMs = firstChargingMs,
+        measuringFirstCharging = measuringFirstCharging,
     )
 }
 
@@ -72,11 +97,24 @@ private fun ConnectedScreen(
     displayText: String,
     onDisplayTextChange: (String) -> Unit,
     onDisconnect: suspend () -> Unit,
+    firstChargingMs: Long?,
+    measuringFirstCharging: Boolean,
 ) {
     var tab by rememberSaveable { mutableStateOf(0) }
 
+    // charging は null/true/false を区別できる唯一の「グラスから読める状態」。
+    // 上部バーはどのタブにいても見えるので、ここに出しておけば設定タブを
+    // 開かなくても3状態の変化がひと目で分かる
+    val charging by session.charging.collectAsStateWithLifecycle()
+
     Scaffold(
-        topBar = { TopAppBar(title = { Text("接続中: ${session.deviceName}") }) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text("接続中: ${session.deviceName}　充電: ${chargingLabel(charging)}")
+                },
+            )
+        },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             // タブが増えて固定幅の TabRow では収まらなくなったので Scrollable にした。
@@ -118,7 +156,12 @@ private fun ConnectedScreen(
                 // マイクの停止は MicScreen 側の効果（LaunchedEffect の finally と DisposableEffect）で行う
                 7 -> MicScreen(session = session, gestures = gestures)
                 // ページの後始末（ホームに戻す）は SettingsProbeScreen 側の DisposableEffect で行う
-                8 -> SettingsProbeScreen(session = session, gestures = gestures)
+                8 -> SettingsProbeScreen(
+                    session = session,
+                    gestures = gestures,
+                    firstChargingMs = firstChargingMs,
+                    measuringFirstCharging = measuringFirstCharging,
+                )
                 // キャンバスの後始末は CanvasMultiImageScreen 側の DisposableEffect で行う
                 9 -> CanvasMultiImageScreen(session = session, gestures = gestures)
                 // 背景IMU/マイクの停止・キャンバス/レイアウト/ナビの後始末は ContentionScreen 側の効果で行う

@@ -172,6 +172,20 @@ fun ArrowTransportPanel(
     val effWidth = imageWidth.coerceAtMost(imageShape.maxWidthFor(imageRoute ?: ImageRoute.IMAGE_PAGE))
     val effHeight = imageShape.heightFor(effWidth)
 
+    // 画像経路は ImageRouteScreen と同じ RouteCheck で検算する。IMAGE_PAGE は
+    // SDK 0.8.1 から196超で require が飛ぶようになったので、ここで弾かれるなら
+    // 再生自体を止める（CANVAS は元から require で落ちるが、こちらは try/catch で
+    // 拾って停止するだけだった。IMAGE_PAGE も同じ危険が増えたので、送る前に
+    // 塞いでおく）
+    val imageRouteCheck = remember(imageRoute, pose, style, effWidth, effHeight, canvasOriginX, canvasOriginY) {
+        imageRoute?.let { route ->
+            val image = ArrowRaster.renderGray(pose, style, effWidth, effHeight)
+            val encoded = ThreeBitRle.encodedSize(image.pixels)
+            route.check(canvasOriginX, canvasOriginY, effWidth, effHeight, encoded)
+        }
+    }
+    val blockedBySdkCheck = imageRouteCheck?.throwsInSdk == true
+
     // 送信ループが読む「今の設定」。rememberUpdatedState で包み、再生中に変えても
     // ループを作り直さない（PacedLoop の KDoc が呼び出し側に求める責務そのもの）
     val poseState by rememberUpdatedState(pose)
@@ -437,8 +451,17 @@ fun ArrowTransportPanel(
         Spacer(Modifier.height(12.dp))
         Button(
             onClick = { playing = !playing },
+            enabled = playing || !blockedBySdkCheck,
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (playing) "停止" else "再生") }
+        if (blockedBySdkCheck && !playing) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                imageRouteCheck.error ?: "この大きさ・位置では送れない見込み",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         PacingPanel(pacing, fps)
